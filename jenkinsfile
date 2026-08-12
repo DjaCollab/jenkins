@@ -1,0 +1,31 @@
+pipeline {
+   agent any 
+   stages {
+       stage('Clone repo') {
+        steps {
+            git branch: 'main',
+                url: 'https://github.com/gitDk70/coopvvr.git',
+                credentialsId: 'github-coopvvr'
+        }
+        }
+        stage('Build') {
+            steps {
+                dir('coopvvr') {
+                echo "coopvvr clean install"  
+                }  
+         }
+      }
+      stage('Test') {
+         steps {
+             dir('coopvvr') {
+                echo "coopvvr test"    
+         }
+         }
+      }
+      stage('Deploy') {
+         steps {
+            echo 'Deploying...'
+         }
+      }
+   }
+}

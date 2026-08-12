@@ -1,0 +1,25 @@
+---"IBIS Database 6.1.0.exe" /Silent /NoRestart /DBINTEGRITY /InstallType=#Replace(Replace(oEnvironment.Item("FTProductID"),"SVR","NewCS",vbTextCompare),"DCX","NewDCX",vbTextCompare)#  /CountryCode=#oEnvironment.Item("FTCfgDBSchema_CountryCode")# /SiteCode=%FTCfgDBSchema_SiteCode% /SiteCodeL4=#oEnvironment.Item("FTCfgDBSchema_L4")# #oEnvironment.Item("FTCfgDBSchema_NOC")# #oEnvironment.Item("FTCfgDBSchema_NoWOC")#
+
+upgrade switches
+IBISdbSetup.exe /VerySilent /InstallType=UpgDB /UserName=dbaccount /UserPwd=yourpassword
+
+en remote:
+IBISdbSetup.exe /VerySilent /InstallType=UpgDB /UserName=dbaccount /UserPwd=yourpassword /DBCnnStg=dcx1.001.tst
+ 
+le shema hit:
+IBISdbSetup.exe /VerySilent /InstallType=UpgHIT /UserName=dbaccount /UserPwd=yourpassword
+ 
+All Upgrade Parameters
+Parameter	Required	Description
+/InstallType=UpgDB	✅ Mandatory	Triggers upgrade mode for CS or DCX
+/UserName=	✅ Mandatory	Database user account
+/UserPwd=	✅ Mandatory	Database password
+/DBCnnStg=	Optional	Connection string for remote database upgrade
+/IbisSchema=	NOC/HIT only	Schema name to upgrade
+/VerySilent	Recommended	Runs without any UI prompts
+Important Notes from the Code
+The installer auto-detects whether the existing DB is CS or DCX — you don't need to specify it for UpgDB
+/VerySilent is key for command line — without it the wizard UI will appear
+UserName and UserPwd are the only mandatory parameters for UpgDB — everything else is optional
+For local upgrades, skip /DBCnnStg — it's only needed for remote database connections
+ 

@@ -1,0 +1,113 @@
+pipeline {
+    agent { label 'built-in' }
+
+    triggers {
+        pollSCM('H/5 * * * *')
+    }
+
+    environment {
+        GIT_REPO_URL        = 'https://bitbucket.org/djatest/dbdeploy.git'
+        GIT_BRANCH          = 'main'
+        GIT_CREDENTIALS     = 'bitbucket-creds'
+        DB_HOST             = 'DCX2-003-TST'
+        DB_PORT             = '1815'
+        DB_NAME             = 'ibis'
+        DB_DOMAIN           = 'SEC'
+        DB_USER             = 'dja'
+        DB_PASSWORD         = credentials('db-password')
+        PG_VERSION_EXPECTED = '17.10'
+        INSTALLER_EXE       = 'SOFTW-01442-00 - IBIS Database 6.1.0.06.exe'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: "${GIT_BRANCH}",
+                    url: "${GIT_REPO_URL}",
+                    credentialsId: "${GIT_CREDENTIALS}"
+            }
+        }
+
+        stage('Test Database Connection') {
+            steps {
+                bat '''
+                    set PGPASSWORD=%DB_PASSWORD%
+                    psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -c "SELECT 1;"
+                '''
+            }
+        }
+
+        stage('Check Database Consistency') {
+            steps {
+                bat '''
+                    set PGPASSWORD=%DB_PASSWORD%
+                    psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT checkcon();" > checkcon_output.txt
+                '''
+                script {
+                    env.CHECKCON_OUTPUT = readFile('checkcon_output.txt').trim()
+                    echo env.CHECKCON_OUTPUT
+                    env.CHECKCON_PASSED = (
+                        env.CHECKCON_OUTPUT.contains('0 disabled trigger found') &&
+                        env.CHECKCON_OUTPUT.contains('0 disabled constraint(s) found') &&
+                        env.CHECKCON_OUTPUT.contains('materialized view(s) refreshed') &&
+                        env.CHECKCON_OUTPUT.contains('Images and signatures partition definitions are compliant.') &&
+                        env.CHECKCON_OUTPUT.contains('Table scan_partitions is compliant.')
+                    ) as String
+                }
+            }
+        }
+
+        stage('Check PostgreSQL Version') {
+            steps {
+                bat '''
+                    set PGPASSWORD=%DB_PASSWORD%
+                    psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT version();" > pg_version_output.txt
+                '''
+                script {
+                    env.PG_VERSION_OUTPUT = readFile('pg_version_output.txt').trim()
+                    echo env.PG_VERSION_OUTPUT
+                    env.PG_VERSION_MATCHED = env.PG_VERSION_OUTPUT.contains(env.PG_VERSION_EXPECTED) as String
+                }
+            }
+        }
+
+        stage('Execute Upgrade Installer') {
+            when {
+                expression {
+                    env.CHECKCON_PASSED == 'true' && env.PG_VERSION_MATCHED == 'true'
+                }
+            }
+            steps {
+                echo 'Installing...'
+                // powershell '''
+                //     $securePassword = ConvertTo-SecureString $env:DB_PASSWORD -AsPlainText -Force
+                //     $credential = New-Object System.Management.Automation.PSCredential("$env:DB_DOMAIN\\$env:DB_USER", $securePassword)
+                //     $session = New-PSSession -ComputerName $env:DB_HOST -Credential $credential
+                //
+                //     $localPath = Join-Path $env:WORKSPACE $env:INSTALLER_EXE
+                //     $remoteDir = "C:\\Temp"
+                //     $remotePath = Join-Path $remoteDir $env:INSTALLER_EXE
+                //
+                //     Invoke-Command -Session $session -ScriptBlock {
+                //         param($dir)
+                //         New-Item -ItemType Directory -Force -Path $dir | Out-Null
+                //     } -ArgumentList $remoteDir
+                //
+                //     Copy-Item -Path $localPath -Destination $remotePath -ToSession $session
+                //
+                //     Invoke-Command -Session $session -ScriptBlock {
+                //         param($path, $dbUser, $dbPwd)
+                //         Start-Process -FilePath $path -ArgumentList @(
+                //             "/VerySilent",
+                //             "/InstallType=UpgDB",
+                //             "/UserName=$dbUser",
+                //             "/UserPwd=$dbPwd"
+                //         ) -Wait
+                //     } -ArgumentList $remotePath, $env:DB_USER, $env:DB_PASSWORD
+                //
+                //     Remove-PSSession $session
+                // '''
+            }
+        }
+    }
+}
