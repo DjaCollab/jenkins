@@ -1,0 +1,232 @@
+================================================================================
+AUTOMATED TEST-ENVIRONMENT UPGRADE WITH JENKINS
+Custom PostgreSQL package (IBIS) on Windows VMs
+================================================================================
+
+Environment assumed:
+  - Database package: SOFTW-01442-00 - IBIS Database 6.1.0.06.exe (custom built)
+  - Target: 2 test servers, Windows VMs
+  - Regression tests run before and after the upgrade
+
+
+--------------------------------------------------------------------------------
+1. PUBLISH THE .EXE AS A VERSIONED ARTIFACT, NOT A FILE ON A SHARE
+--------------------------------------------------------------------------------
+
+The filename "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe" carries everything you
+need, but spaces and the part number will bite you in scripts. When the DBA/build
+team publishes, have the pipeline copy it to a repository (Artifactory, Nexus raw
+repo, or at minimum a locked-down share with an immutable folder per version)
+plus a small manifest:
+
+    {
+      "product": "IBIS Database",
+      "partNumber": "SOFTW-01442-00",
+      "version": "6.1.0.06",
+      "file": "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe",
+      "sha256": "...",
+      "minAppVersion": "6.1.0",
+      "releaseNotes": "..."
+    }
+
+The deploy pipeline then takes DB_VERSION as a parameter, resolves the manifest,
+downloads, and VERIFIES THE SHA256 BEFORE RUNNING ANYTHING. On the agent, copy it
+to a path without spaces (C:\Deploy\6.1.0.06\ibis-db.exe) so nothing in your
+scripts has to fight quoting.
+
+Trigger: the packaging job, on success, calls
+
+    build job: 'deploy-test-db',
+          parameters: [string(name: 'DB_VERSION', value: v)],
+          wait: false
+
+
+--------------------------------------------------------------------------------
+2. FIND THE SILENT-INSTALL SWITCHES BEFORE ANYTHING ELSE
+--------------------------------------------------------------------------------
+
+This is the make-or-break detail with a custom .exe. Ask whoever builds it, or
+determine it:
+
+    Packager        Switches                                        Log
+    ------------    --------------------------------------------    ------------------------------
+    InstallShield   /s /v"/qn"                                      /v"/l*v C:\logs\install.log"
+    Inno Setup      /VERYSILENT /SUPPRESSMSGBOXES /NORESTART        /LOG="C:\logs\install.log"
+    NSIS            /S                                              varies
+    MSI wrapper     msiexec /i pkg.msi /qn /norestart               /l*v C:\logs\install.log
+
+Two things that catch people out:
+
+  - If the installer takes parameters (DB host, port, superuser password, data
+    directory), find out whether it supports a RESPONSE FILE (/f1"setup.iss" for
+    InstallShield, /LOADINF for Inno). Record one interactively once, commit it
+    to Git, and template the secrets in at deploy time from Jenkins credentials.
+    Passing passwords on the command line puts them in the Windows process table
+    and Jenkins logs.
+
+  - If the Jenkins agent runs as a Windows SERVICE, it's in session 0 with no
+    desktop. A "silent" installer that still tries to show a dialog will hang
+    forever with no output. Always wrap with a timeout.
+
+    $p = Start-Process -FilePath 'C:\Deploy\6.1.0.06\ibis-db.exe' `
+                       -ArgumentList '/s','/v"/qn /l*v C:\Deploy\logs\6.1.0.06.log"' `
+                       -Wait -PassThru
+    if ($p.ExitCode -notin 0,3010) { throw "Installer failed with exit code $($p.ExitCode)" }
+    if ($p.ExitCode -eq 3010) { Write-Host 'Reboot required' }
+
+Archive that install log as a Jenkins artifact every single time, success or
+failure. When something goes wrong at 2am, it's the only thing that will tell you
+why.
+
+
+--------------------------------------------------------------------------------
+3. SNAPSHOT THE VM - THIS IS YOUR ROLLBACK
+--------------------------------------------------------------------------------
+
+Custom .exe DB packages almost never uninstall cleanly, and PostgreSQL upgrades
+aren't reversible. Don't try to build a down-path; make restore cheap instead.
+
+If VMware, use PowerCLI from the pipeline:
+
+    Connect-VIServer $vcenter -Credential $cred
+    New-Snapshot -VM 'IBIS-TEST-01' -Name "pre-6.1.0.06-build$env:BUILD_NUMBER" -Memory:$false -Quiesce
+
+Hyper-V equivalent is Checkpoint-VM. Take it AFTER stopping the services so the DB
+is cleanly shut down, not quiesced mid-write.
+
+Do a pg_dump/pg_dumpall as well - it's slower to restore but survives snapshot
+cleanup and lets you diff schemas:
+
+    & "$pgbin\pg_dumpall.exe" --globals-only -f "$backupDir\globals.sql"
+    & "$pgbin\pg_dump.exe" -Fc -d ibis -f "$backupDir\ibis.dump"
+
+Add a scheduled Jenkins job that deletes snapshots older than ~7 days, or your
+test VMs will die of disk exhaustion. That's not optional; it's the most common
+way this setup falls over.
+
+
+--------------------------------------------------------------------------------
+4. PIPELINE SHAPE
+--------------------------------------------------------------------------------
+
+With two servers, the first question is whether they're independent test
+environments or a related pair (app server + DB server, or primary + standby).
+Assuming two independent test envs, run them SEQUENTIALLY, NOT IN PARALLEL - if
+the first one fails you've saved the second, and you have a clean environment to
+compare against.
+
+    Stage 1  Resolve version + download + verify checksum
+    Stage 2  Pre-flight checks        (per server)
+    Stage 3  Baseline regression run  (per server)   <- before
+    Stage 4  Stop services + backup + snapshot
+    Stage 5  Install package silently
+    Stage 6  Post-install verification
+    Stage 7  Start services
+    Stage 8  Post-upgrade regression run             <- after
+    Stage 9  Compare vs baseline, report, cleanup
+
+Wrap the whole thing in a lock so two triggers can't collide:
+
+    options {
+      disableConcurrentBuilds()
+      timeout(time: 3, unit: 'HOURS')
+    }
+    // and per-server:
+    lock(resource: "ibis-test-${SERVER}") { ... }
+
+
+--------------------------------------------------------------------------------
+5. THE CHECKS THAT ACTUALLY MATTER
+--------------------------------------------------------------------------------
+
+PRE-FLIGHT (fail fast, before touching anything):
+
+    SELECT version();                                            -- PG version
+    SELECT * FROM ibis_schema_version ORDER BY 1 DESC LIMIT 1;   -- app schema version
+    SELECT count(*) FROM pg_stat_activity WHERE datname='ibis' AND pid<>pg_backend_pid();
+
+Plus: free disk on the data volume and the backup target, services in the expected
+state, and - importantly - IS THE INSTALLED VERSION ALREADY DB_VERSION? If yes,
+skip and mark the build as unstable rather than reinstalling. That makes the job
+idempotent and safe to re-run.
+
+Kill or refuse to proceed on active connections. An installer that can't get an
+exclusive lock may half-apply and leave you in a worse state than failing outright.
+
+BASELINE REGRESSION BEFORE THE UPGRADE is the piece people skip and then regret.
+If test is already broken from yesterday's app deploy, you need to know that
+BEFORE you upgrade, or you'll spend a day blaming the DB package. Store the
+baseline results as a build artifact and diff against the post-run.
+
+POST-INSTALL VERIFICATION, before you even run regression:
+
+  - Service is running:  Get-Service postgresql* | Where Status -ne 'Running'
+  - Connectivity:        psql -c "SELECT 1"
+  - Version actually changed to the expected value (query your schema-version table)
+  - No invalid objects / no errors in the PG log since the install started:
+
+        Select-String -Path "$pgdata\log\*.log" -Pattern 'FATAL|PANIC' |
+          Where { $_.Line -match $today }
+
+  - Object counts roughly match pre-upgrade (tables, functions, indexes) - a sudden
+    drop of 40 functions means the package did something you didn't expect.
+
+
+--------------------------------------------------------------------------------
+6. RECORD WHAT'S DEPLOYED
+--------------------------------------------------------------------------------
+
+Have the pipeline write the version to a place both humans and jobs can read - a
+deployment_history table in the DB itself is ideal:
+
+    INSERT INTO deployment_history(package, version, deployed_at, jenkins_build, deployed_by)
+    VALUES ('SOFTW-01442-00', '6.1.0.06', now(), '1234', 'jenkins');
+
+Then "what's in test?" is a query, not a guess, and your pre-flight idempotency
+check reads from the same place.
+
+
+--------------------------------------------------------------------------------
+7. ROLLBACK
+--------------------------------------------------------------------------------
+
+On failure at any stage after Stage 4:
+
+    1. Stop services.
+    2. Set-VM -VM $vm -Snapshot $snap  (revert), or restore the dump into a
+       freshly initialised cluster.
+    3. Start services, run the baseline smoke test to confirm you're back.
+    4. Notify with the install log attached.
+
+Make auto-rollback OPT-IN VIA A PARAMETER (ROLLBACK_ON_FAILURE, default true) -
+sometimes you want the broken state preserved for the DBA to look at.
+
+
+--------------------------------------------------------------------------------
+TWO THINGS WORTH DECIDING EARLY
+--------------------------------------------------------------------------------
+
+AGENT ACCOUNT
+The Jenkins agent needs local admin on both VMs to run the installer and control
+services. Either install a Jenkins agent service on each VM under a dedicated
+service account, or drive them from a single agent over WinRM
+(Invoke-Command -ComputerName ... -Credential ...). WinRM keeps the VMs cleaner
+but you'll fight the double-hop problem the moment you access a network share from
+the remote session - CredSSP or a local copy of the installer solves it.
+
+NOTIFICATION CONTENT
+Slack/Teams/email on both success and failure, saying: server, old version -> new
+version, duration, regression pass/fail counts vs baseline, link to build. QA needs
+to know what they're testing against.
+
+
+--------------------------------------------------------------------------------
+OPEN QUESTIONS TO ANSWER BEFORE WRITING THE REAL JENKINSFILE
+--------------------------------------------------------------------------------
+
+  1. Which packager built the .exe (InstallShield, Inno Setup, NSIS, MSI wrapper)?
+  2. Are the two servers independent test environments, or a paired set
+     (app + DB, or primary + standby)?
+  3. What does the regression suite run on (SQL scripts, pytest, SoapUI, other)?
+
+================================================================================

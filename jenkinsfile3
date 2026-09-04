@@ -1,0 +1,464 @@
+@NonCPS
+def extractBuildNumber(String path) {
+    def m = (path =~ /(\d+\.\d+\.\d+\.\d+)/)
+    return m.find() ? m.group(1) : null
+}
+
+@NonCPS
+def classifyGroup(String name) {
+    def upper = name.toUpperCase()
+    if (upper.startsWith('SVR')) return 'CS'
+    if (upper.startsWith('DCXA') || upper.startsWith('DCXB') || upper.startsWith('DCXC')) return 'LIR'
+    if (upper.startsWith('DCX')) return 'DCX'
+    return 'UNKNOWN'
+}
+
+pipeline {
+    agent { label 'built-in' }
+
+    environment {
+        DB_PORT             = '1815'
+        DB_NAME             = 'ibis'
+        DB_DOMAIN           = 'SEC'
+        DB_USER             = 'dja'
+        DB_PASSWORD         = credentials('db-password')
+        PG_VERSION_EXPECTED = '17.10'
+        INSTALLER_PATH      = 'C:\\Temp\\Database\\SOFTW-01442-00 - IBIS Database 6.1.0.06.exe'
+        EMAIL_RECIPIENTS    = 'djaouida.kharchi@leadsonline.com'
+    }
+
+    stages {
+        stage('Upgrade VMs') {
+            steps {
+                script {
+                    def vms = [
+                        [name: 'SVR4-004-SEC', extraArgs: []],
+                        [name: 'SVR3-009-SEC', extraArgs: []],
+                        [name: 'SVR5-004-SEC', extraArgs: []],
+                        [name: 'SVR6-004-SEC', extraArgs: []],
+                        [name: 'DCXA-004-SEC', extraArgs: []],
+                        [name: 'DCXB-004-SEC', extraArgs: []],
+                        [name: 'DCXC-004-SEC', extraArgs: []],
+                        [name: 'DCX2-003-SEC', extraArgs: []],
+                        [name: 'DCX2-004-SEC', extraArgs: ['/IbisSchema=CHM']],
+                        [name: 'DCX4-004-SEC', extraArgs: []],
+                        [name: 'DCX1-004-SEC', extraArgs: []]
+                    ]
+
+                    env.INSTALLER_BUILD = extractBuildNumber(env.INSTALLER_PATH)
+                    echo "Installer build number: ${env.INSTALLER_BUILD}"
+
+                    def results = []
+
+                    // Order matters: CS (SVR*) must succeed before LIR (DCXA*/DCXB*/DCXC*), and LIR before the plain DCX group.
+                    def phases = [
+                        [label: 'CS',  vms: vms.findAll { classifyGroup(it.name) == 'CS' },  gate: true],
+                        [label: 'LIR', vms: vms.findAll { classifyGroup(it.name) == 'LIR' }, gate: true],
+                        [label: 'DCX', vms: vms.findAll { classifyGroup(it.name) == 'DCX' }, gate: false]
+                    ]
+
+                    try {
+                        for (phase in phases) {
+                            if (phase.vms.isEmpty()) {
+                                continue
+                            }
+
+                            stage("Phase: ${phase.label}") {
+                                for (vm in phase.vms) {
+                                    def group = phase.label
+                                    def detail = []
+                                    def version = 'N/A'
+                                    def status = 'Failed'
+
+                                    try {
+                                        stage("Process ${vm.name}") {
+                                            env.DB_HOST = vm.name
+
+                                            def connRc = bat(
+                                                script: '''
+                                                    set PGPASSWORD=%DB_PASSWORD%
+                                                    psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -c "SELECT 1;"
+                                                ''',
+                                                returnStatus: true
+                                            )
+                                            detail << [label: 'Connection', passed: (connRc == 0), value: (connRc == 0) ? 'OK' : "psql exit ${connRc}"]
+
+                                            if (connRc == 0) {
+                                                def checkconRc = bat(
+                                                    script: '''
+                                                        set PGPASSWORD=%DB_PASSWORD%
+                                                        psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT checkcon();" > checkcon_output.txt
+                                                    ''',
+                                                    returnStatus: true
+                                                )
+                                                if (checkconRc == 0) {
+                                                    env.CHECKCON_OUTPUT = readFile('checkcon_output.txt').trim()
+                                                    echo env.CHECKCON_OUTPUT
+                                                    env.CHECKCON_PASSED = (
+                                                        env.CHECKCON_OUTPUT.contains('0 disabled trigger found') &&
+                                                        env.CHECKCON_OUTPUT.contains('0 disabled constraint(s) found') &&
+                                                        env.CHECKCON_OUTPUT.contains('materialized view(s) refreshed') &&
+                                                        env.CHECKCON_OUTPUT.contains('Images and signatures partition definitions are compliant.') &&
+                                                        env.CHECKCON_OUTPUT.contains('Table scan_partitions is compliant.')
+                                                    ) as String
+                                                } else {
+                                                    env.CHECKCON_OUTPUT = ''
+                                                    env.CHECKCON_PASSED = 'false'
+                                                }
+                                                detail << [label: 'Consistency (checkcon)', passed: (env.CHECKCON_PASSED == 'true'), value: env.CHECKCON_PASSED == 'true' ? 'compliant' : 'issues found']
+
+                                                def pgVerRc = bat(
+                                                    script: '''
+                                                        set PGPASSWORD=%DB_PASSWORD%
+                                                        psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT version();" > pg_version_output.txt
+                                                    ''',
+                                                    returnStatus: true
+                                                )
+                                                if (pgVerRc == 0) {
+                                                    env.PG_VERSION_OUTPUT = readFile('pg_version_output.txt').trim()
+                                                    echo env.PG_VERSION_OUTPUT
+                                                    env.PG_VERSION_MATCHED = env.PG_VERSION_OUTPUT.contains(env.PG_VERSION_EXPECTED) as String
+                                                } else {
+                                                    env.PG_VERSION_OUTPUT = ''
+                                                    env.PG_VERSION_MATCHED = 'false'
+                                                }
+                                                detail << [label: "PostgreSQL ${env.PG_VERSION_EXPECTED}", passed: (env.PG_VERSION_MATCHED == 'true'), value: env.PG_VERSION_OUTPUT ?: 'unknown']
+
+                                                def vmTypeRc = bat(
+                                                    script: '''
+                                                        set PGPASSWORD=%DB_PASSWORD%
+                                                        psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT sit_cod FROM sys_params;" > sitcod_output.txt
+                                                    ''',
+                                                    returnStatus: true
+                                                )
+                                                def vmTypeValid = false
+                                                def sitCod = ''
+                                                if (vmTypeRc == 0) {
+                                                    sitCod = readFile('sitcod_output.txt').trim()
+                                                    echo "sit_cod: ${sitCod}"
+
+                                                    def hostUpper = env.DB_HOST.toUpperCase()
+                                                    def vmType = hostUpper.startsWith('DCX') ? 'DCX' : hostUpper.startsWith('SVR') ? 'CS' : 'UNKNOWN'
+                                                    def expectedDigit = (vmType == 'DCX') ? '2' : (vmType == 'CS') ? '9' : null
+                                                    def fourthDigit = (sitCod?.length() >= 4) ? sitCod[3] : null
+                                                    vmTypeValid = (expectedDigit != null && fourthDigit == expectedDigit)
+                                                    echo "VM type: ${vmType}, expected 4th digit of sit_cod: ${expectedDigit}, actual: ${fourthDigit}, valid: ${vmTypeValid}"
+                                                }
+                                                env.VM_TYPE_VALID = vmTypeValid as String
+                                                detail << [label: 'VM type (sit_cod)', passed: vmTypeValid, value: sitCod ?: 'unknown']
+
+                                                if (group == 'LIR') {
+                                                    def siteRc = bat(
+                                                        script: '''
+                                                            set PGPASSWORD=%DB_PASSWORD%
+                                                            psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT typ FROM sites WHERE cod=(SELECT sit_cod FROM sys_params);" > site_type_output.txt
+                                                        ''',
+                                                        returnStatus: true
+                                                    )
+                                                    def siteType = ''
+                                                    if (siteRc == 0) {
+                                                        siteType = readFile('site_type_output.txt').trim()
+                                                    }
+                                                    env.SITE_TYPE_VALID = (siteType == 'LIR') as String
+                                                    echo "site type: ${siteType}, valid LIR: ${env.SITE_TYPE_VALID}"
+                                                    detail << [label: 'Site type (LIR)', passed: (env.SITE_TYPE_VALID == 'true'), value: siteType ?: 'unknown']
+                                                } else {
+                                                    env.SITE_TYPE_VALID = 'true'
+                                                }
+
+                                                def buildRc = bat(
+                                                    script: '''
+                                                        set PGPASSWORD=%DB_PASSWORD%
+                                                        psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT last_pkg_update();" > last_pkg_update_output.txt
+                                                    ''',
+                                                    returnStatus: true
+                                                )
+                                                if (buildRc == 0) {
+                                                    env.LAST_PKG_UPDATE_OUTPUT = readFile('last_pkg_update_output.txt').trim()
+                                                    echo env.LAST_PKG_UPDATE_OUTPUT
+                                                    env.CURRENT_BUILD = extractBuildNumber(env.LAST_PKG_UPDATE_OUTPUT)
+                                                    env.ALREADY_UP_TO_DATE = env.LAST_PKG_UPDATE_OUTPUT.contains("build: ${env.INSTALLER_BUILD}") as String
+                                                } else {
+                                                    echo "last_pkg_update() not found on ${vm.name} - not yet upgraded to 6.1, treating as not up to date"
+                                                    env.CURRENT_BUILD = 'pre-6.1'
+                                                    env.ALREADY_UP_TO_DATE = 'false'
+                                                }
+                                                version = env.CURRENT_BUILD
+                                                detail << [label: 'Current build', passed: null, value: env.ALREADY_UP_TO_DATE == 'true' ? "${env.CURRENT_BUILD} (up to date)" : "${env.CURRENT_BUILD}"]
+
+                                                if (env.ALREADY_UP_TO_DATE == 'true') {
+                                                    echo "Skipping install on ${vm.name}: already at build ${env.INSTALLER_BUILD}, no need to upgrade"
+                                                    detail << [label: 'Install', passed: null, value: 'Skipped - already up to date']
+                                                    status = 'Skipped'
+                                                } else if (env.CHECKCON_PASSED == 'true' && env.PG_VERSION_MATCHED == 'true' && env.VM_TYPE_VALID == 'true' && env.SITE_TYPE_VALID == 'true') {
+                                                    try {
+                                                        def extraArgsJoined = vm.extraArgs.join(',')
+                                                        def installOutput
+                                                        withEnv(["TARGET_HOST=${vm.name}", "EXTRA_ARGS=${extraArgsJoined}"]) {
+                                                            installOutput = powershell(returnStdout: true, script: '''
+                                                                $securePassword = ConvertTo-SecureString $env:DB_PASSWORD -AsPlainText -Force
+                                                                $credential = New-Object System.Management.Automation.PSCredential("$env:DB_DOMAIN\\$env:DB_USER", $securePassword)
+                                                                $session = New-PSSession -ComputerName $env:TARGET_HOST -Credential $credential
+
+                                                                $remoteDir = "C:\\Temp"
+                                                                $exeName = Split-Path $env:INSTALLER_PATH -Leaf
+                                                                $remotePath = Join-Path $remoteDir $exeName
+
+                                                                Invoke-Command -Session $session -ScriptBlock {
+                                                                    param($dir)
+                                                                    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+                                                                } -ArgumentList $remoteDir
+
+                                                                Copy-Item -Path $env:INSTALLER_PATH -Destination $remotePath -ToSession $session
+
+                                                                $extraArgs = @($env:EXTRA_ARGS -split ',' | Where-Object { $_ -ne '' })
+
+                                                                $exitCode = Invoke-Command -Session $session -ScriptBlock {
+                                                                    param($path, $dbUser, $dbPwd, $extra)
+                                                                    $installArgs = @(
+                                                                        "/VerySilent",
+                                                                        "/InstallType=UpgDB",
+                                                                        "/UserName=$dbUser",
+                                                                        "/UserPwd=$dbPwd"
+                                                                    ) + $extra
+                                                                    $process = Start-Process -FilePath $path -ArgumentList $installArgs -Wait -PassThru
+                                                                    return $process.ExitCode
+                                                                } -ArgumentList $remotePath, $env:DB_USER, $env:DB_PASSWORD, $extraArgs
+
+                                                                Remove-PSSession $session
+
+                                                                Write-Output "EXITCODE:$exitCode"
+                                                            '''.trim())
+                                                        }
+                                                        echo installOutput
+                                                        def exitLine = installOutput.readLines().find { it.startsWith('EXITCODE:') }
+                                                        def exitCode = exitLine ? exitLine.replace('EXITCODE:', '').trim() : 'unknown'
+                                                        if (exitCode == '0') {
+                                                            version = env.INSTALLER_BUILD
+                                                            status = 'Success'
+                                                            detail << [label: 'Install', passed: true, value: "installed build ${env.INSTALLER_BUILD}"]
+                                                        } else {
+                                                            echo "Installer on ${vm.name} exited with code ${exitCode}"
+                                                            status = 'Failed'
+                                                            detail << [label: 'Install', passed: false, value: "installer exit code ${exitCode}"]
+                                                        }
+                                                    } catch (Exception installEx) {
+                                                        echo "Remote install on ${vm.name} failed: ${installEx.getMessage()}"
+                                                        status = 'Failed'
+                                                        detail << [label: 'Install', passed: false, value: "remoting error: ${installEx.getMessage()}"]
+                                                    }
+                                                } else {
+                                                    echo "Skipping install on ${vm.name}: CHECKCON_PASSED=${env.CHECKCON_PASSED}, PG_VERSION_MATCHED=${env.PG_VERSION_MATCHED}, VM_TYPE_VALID=${env.VM_TYPE_VALID}, SITE_TYPE_VALID=${env.SITE_TYPE_VALID}"
+                                                    status = 'Failed'
+                                                    detail << [label: 'Install', passed: false, value: 'Skipped - pre-check failed']
+                                                }
+                                            } else {
+                                                detail << [label: 'Consistency (checkcon)', passed: null, value: 'N/A - no connection']
+                                                detail << [label: "PostgreSQL ${env.PG_VERSION_EXPECTED}", passed: null, value: 'N/A - no connection']
+                                                detail << [label: 'VM type (sit_cod)', passed: null, value: 'N/A - no connection']
+                                                if (group == 'LIR') {
+                                                    detail << [label: 'Site type (LIR)', passed: null, value: 'N/A - no connection']
+                                                }
+                                                detail << [label: 'Current build', passed: null, value: 'N/A - no connection']
+                                                detail << [label: 'Install', passed: false, value: 'Skipped - no connection']
+                                                status = 'Failed'
+                                            }
+                                        }
+                                    } catch (Exception e) {
+                                        echo "VM ${vm.name} processing failed unexpectedly: ${e.getMessage()}"
+                                        detail << [label: 'Unexpected error', passed: false, value: e.getMessage()]
+                                        status = 'Failed'
+                                        currentBuild.result = 'FAILURE'
+                                    }
+
+                                    if (status == 'Failed') {
+                                        currentBuild.result = 'FAILURE'
+                                    }
+
+                                    results << [name: vm.name, phase: group, version: version, status: status, detail: detail]
+                                }
+                            }
+
+                            if (phase.gate) {
+                                def phaseVmNames = phase.vms.collect { it.name }
+                                def phaseFailures = results.findAll { it.name in phaseVmNames && it.status == 'Failed' }
+                                if (phaseFailures) {
+                                    error("Stopping pipeline: ${phase.label} phase had failure(s) on: ${phaseFailures.collect { it.name }.join(', ')}")
+                                }
+                            }
+                        }
+                    } finally {
+                        stage('Generate Report') {
+                            def statusMeta = [
+                                'Success': [icon: '&#10003;', label: 'Success', token: 'good'],
+                                'Failed':  [icon: '&#10007;', label: 'Failed',  token: 'critical'],
+                                'Skipped': [icon: '&#8213;',  label: 'Skipped', token: 'warning']
+                            ]
+                            def checkMeta = [
+                                (true):  [icon: '&#10003;', token: 'good'],
+                                (false): [icon: '&#10007;', token: 'critical'],
+                                (null):  [icon: '&#8213;',  token: 'warning']
+                            ]
+
+                            def successCount = results.count { it.status == 'Success' }
+                            def failedCount  = results.count { it.status == 'Failed' }
+                            def skippedCount = results.count { it.status == 'Skipped' }
+
+                            def tile = { key, count ->
+                                def meta = statusMeta[key]
+                                """<div class="tile" style="border-left-color: var(--status-${meta.token});">
+                                    <div class="tile-icon" style="background: var(--status-${meta.token}-bg); color: var(--status-${meta.token});">${meta.icon}</div>
+                                    <div>
+                                        <div class="tile-value">${count}</div>
+                                        <div class="tile-label">${meta.label}</div>
+                                    </div>
+                                </div>"""
+                            }
+
+                            def phaseNames = ['CS': 'CS &mdash; Central Servers', 'LIR': 'LIR Sites', 'DCX': 'DCX Sites']
+                            def phaseOrder = ['CS', 'LIR', 'DCX']
+
+                            def tableSections = phaseOrder.findAll { p -> results.any { it.phase == p } }.collect { p ->
+                                def sectionRows = results.findAll { it.phase == p }.collect { r ->
+                                    def meta = statusMeta[r.status]
+                                    def checkItems = r.detail.collect { d ->
+                                        def cm = checkMeta[d.passed]
+                                        """<div class="check-item">
+                                            <span class="check-icon" style="background: var(--status-${cm.token}-bg); color: var(--status-${cm.token});">${cm.icon}</span>
+                                            <span class="check-text"><strong>${d.label}:</strong> ${d.value}</span>
+                                        </div>"""
+                                    }.join('\n')
+
+                                    """<tr>
+                                        <td>${r.name}</td>
+                                        <td class="num">${r.version ?: 'N/A'}</td>
+                                        <td><span class="badge" style="background: var(--status-${meta.token}-bg);"><span class="badge-icon" style="color: var(--status-${meta.token});">${meta.icon}</span>${meta.label}</span></td>
+                                    </tr>
+                                    <tr class="detail-row">
+                                        <td colspan="3">
+                                            <div class="check-list">
+                                                ${checkItems}
+                                            </div>
+                                        </td>
+                                    </tr>"""
+                                }.join('\n')
+
+                                """<tr class="group-row"><td colspan="3">${phaseNames[p]}</td></tr>
+                                ${sectionRows}"""
+                            }.join('\n')
+
+                            def html = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>IBIS Database Upgrade Report</title>
+    <style>
+        :root {
+            --page:            #f9f9f7;
+            --surface:         #fcfcfb;
+            --text-primary:    #0b0b0b;
+            --text-secondary:  #52514e;
+            --text-muted:      #898781;
+            --gridline:        #e1e0d9;
+            --border:          rgba(11,11,11,0.10);
+            --status-good:          #0ca30c;
+            --status-good-bg:       #e5f6e5;
+            --status-critical:      #d03b3b;
+            --status-critical-bg:   #fbe6e6;
+            --status-warning:       #fab219;
+            --status-warning-bg:    #fff3da;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            background: var(--page);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 32px;
+        }
+        .container { max-width: 860px; margin: 0 auto; }
+        h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+        .subtitle { color: var(--text-secondary); font-size: 13px; margin: 0 0 24px; }
+        .tiles { display: flex; gap: 12px; margin-bottom: 24px; }
+        .tile {
+            flex: 1;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-left: 4px solid;
+            border-radius: 6px;
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .tile-icon {
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 16px; font-weight: 700;
+            flex-shrink: 0;
+        }
+        .tile-value { font-size: 28px; font-weight: 600; line-height: 1.1; }
+        .tile-label { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+        table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+        th, td { padding: 10px 16px; text-align: left; font-size: 13px; vertical-align: top; }
+        th { background: var(--surface); color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--gridline); }
+        td { border-bottom: 1px solid var(--gridline); color: var(--text-primary); }
+        tr:last-child td { border-bottom: none; }
+        td.num { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+        .group-row td { background: var(--page); color: var(--text-secondary); font-weight: 600; font-size: 12px; padding: 8px 16px; border-bottom: 1px solid var(--gridline); }
+        .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--text-primary); }
+        .badge-icon { font-size: 12px; }
+        .detail-row td { background: var(--page); padding: 8px 16px 14px 16px; }
+        .check-list { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+        .check-item { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+        .check-icon {
+            width: 16px; height: 16px; min-width: 16px;
+            border-radius: 50%;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 10px; font-weight: 700;
+            margin-top: 1px;
+        }
+        .check-text strong { color: var(--text-primary); font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>IBIS Database Upgrade Report</h1>
+        <p class="subtitle">Target build ${env.INSTALLER_BUILD} &middot; ${results.size()} VM(s) processed</p>
+
+        <div class="tiles">
+            ${tile('Success', successCount)}
+            ${tile('Failed', failedCount)}
+            ${tile('Skipped', skippedCount)}
+        </div>
+
+        <table>
+            <tr><th>VM</th><th>Version</th><th>Status</th></tr>
+            ${tableSections}
+        </table>
+    </div>
+</body>
+</html>
+"""
+
+                            writeFile file: 'upgrade_report.html', text: html
+                            archiveArtifacts artifacts: 'upgrade_report.html'
+                            echo "Report written to upgrade_report.html and archived as a build artifact"
+
+                            try {
+                                mail to: env.EMAIL_RECIPIENTS,
+                                     subject: "IBIS Upgrade Report - build ${env.INSTALLER_BUILD} - ${successCount} success / ${failedCount} failed / ${skippedCount} skipped",
+                                     mimeType: 'text/html',
+                                     body: html
+                                echo "Report emailed to ${env.EMAIL_RECIPIENTS}"
+                            } catch (Exception mailEx) {
+                                echo "Failed to email report: ${mailEx.getMessage()} (SMTP likely not configured in Manage Jenkins > System)"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

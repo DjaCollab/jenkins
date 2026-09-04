@@ -1,0 +1,68 @@
+LEADSONLINE
+CONFIDENTIAL
+
+RELEASE NOTES
+Last update 2025-09-22
+SOFTW-01398-00 - PostgreSQL 17 Installer
+
+DESCRIPTION:
+This package contains the installation scripts of PostgreSQL 17 and upgrade of a PostgreSQL 14.17 database to PostgreSQL 17.6
+This package supports Windows Server 2022
+
+CONTENT:
+-PostgreSQL 17.6
+-pgadmin4
+-psqlodbc
+
+KNOWN ISSUES:
+n/a
+
+PREREQUISITE:
+- System reboot is needed prior running Postgres upgrade from pg14 to pg17.
+- Make sure psql and PgAdmin are not running otherwise the upgrade from pg14 to pg17 will fail.
+
+USAGE:
+- Postgres installation:
+  "SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe" /InstallType=PGinstall
+
+- Postgres upgrade from pg14 to pg17:
+  "SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe" /InstallType=PGupgrade
+
+- Postgres minor version 17.x upgrade:
+  "SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe" /InstallType=PGminor
+
+- Re-install security:
+  "SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe" /secure
+
+CHANGE LOG:
+Version 1.0.0.6, 2025-09-22
+---------------------------
+IBD-1292 [configure_params.ps1] Random_page_cost and CPU count are inaccurate + Dump script on installation
+IBD-1304 PG upgrade from PG14 to PG17.6 - invalid value for parameter "max_worker_processes": "1 1 1 1"
+
+Version 1.0.0.5, 2025-08-19
+---------------------------
+IBD-1290 Compile PG 17.6
+
+Version 1.0.0.4, 2025-08-14
+---------------------------
+IBD-1236 Update publisher name for SOFTW-01398-00 PostgreSQL 17
+IBD-1235 Typo in SOFTW-01398-00 v1.0.0.3 > Release Notes
+IBD-1282 CLONE - Postgres is having issue with Windows' Address Space Layout Randomization (ASLR)
+
+Version 1.0.0.3, 2025-05-14
+---------------------------
+IBD-1230 Upgrade to PG17 v 1.0.0.2 error in post_upgrade script
+
+Version 1.0.0.2, 2025-05-08
+---------------------------
+IBD-1186 PostgreSQL Statistics are reset when the system is restarted
+IBD-1194 preventive maintenance - identify bloated indexes
+IBD-1214 Setup Installer: SOFTW-01398-00 - PostgreSQL 17 Installer v1.0.0.1 picks up incorrect PG version
+IBD-1215 PostgreSQL 17 Installer v1.0.0.1: Needs to remove pg14 folder. Update Path in Environment Variable. Add note to stop services: IBIS Rep & TRAXKernel
+IBD-1222 PG17 adjust max_worker_processes, max_parallel_workers and random_page_cost
+IBD-1223 Gather Vacuum History should not exists after the UPG to 6.0
+
+Version 1.0.0.1, 2025-04-09
+---------------------------
+IBD-1209 [PgInstaller] Compile Postgres version 17.4 and associated extensions

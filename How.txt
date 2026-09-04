@@ -1,0 +1,46 @@
+Fait. Jenkinsfile (563 lignes, accolades équilibrées) fonctionne maintenant ainsi :
+
+La convention
+
+Tu pousses sur une branche upgrade/<version> — par exemple upgrade/6.1.0.06. C'est la version qui sera installée.
+
+regexpFilterExpression: '^refs/heads/upgrade/\\d+\\.\\d+\\.\\d+\\.\\d+$'
+
+Le filtre rejette tout ce qui ne respecte pas ce format. Une branche mal nommée ne déclenche simplement rien, plutôt que de résoudre vers le mauvais installeur.
+
+Ce que fait le pipeline
+
+1. Extrait la version de BB_REF (ou du paramètre INSTALLER_VERSION pour un lancement manuel)
+2. Cherche dans C:\Temp\Database sur le contrôleur un fichier *<version>*.exe, le plus récent s'il y en a plusieurs
+3. Échoue immédiatement avec un message explicite si aucun fichier ne correspond
+4. Affecte INSTALLER_PATH au fichier trouvé — le reste du pipeline est inchangé
+
+La recherche passe par PowerShell : le sandbox Jenkins interdit l'accès aux fichiers depuis Groovy.
+
+Les changements
+
+┌─────────────────────────────────────────┬─────────────────────────────────────────────────────────────────┐
+│                  Avant                  │                              Après                              │
+├─────────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ INSTALLER_PATH codé en dur sur 6.1.0.06 │ INSTALLER_DIR = 'C:\Temp\Database', chemin résolu à l'exécution │
+├─────────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ Déclenchement sur main                  │ Déclenchement sur upgrade/<x.x.x.x>                             │
+├─────────────────────────────────────────┼─────────────────────────────────────────────────────────────────┤
+│ —                                       │ Nouveau paramètre INSTALLER_VERSION pour les lancements manuels │
+└─────────────────────────────────────────┴─────────────────────────────────────────────────────────────────┘
+
+Un push sur main ne déclenche plus rien. C'est voulu, mais ça change le comportement que tu viens de valider.
+
+Le flux résultant
+
+1. Tu déposes … 6.1.0.06.exe dans C:\Temp\Database sur 10.110.2.116
+2. Tu pousses sur upgrade/6.1.0.06 — un commit vide suffit
+3. Le webhook déclenche, le pipeline résout le fichier et lance la mise à niveau
+
+Le dépôt Git reste léger, aucune règle firewall supplémentaire n'est nécessaire, et le push déclare explicitement quelle version installer.
+
+À faire
+
+- Recoller Jenkinsfile dans PGUP puis lancer une fois manuellement (avec INSTALLER_VERSION=6.1.0.06, puisqu'il n'y aura pas de BB_REF)
+- Créer la branche upgrade/6.1.0.06 et pousser pour valider
+- Désactiver PGUP-scheduled — son Jenkinsfile-scheduled garde l'ancien INSTALLER_PATH codé en dur, je ne l'ai pas modifié puisqu'il doit disparaître. Dis-moi si tu préfères l'aligner plutôt que le retirer.

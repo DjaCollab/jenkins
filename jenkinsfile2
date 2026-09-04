@@ -2,7 +2,9 @@ pipeline {
     agent { label 'built-in' }
 
     triggers {
-        pollSCM('H/5 * * * *')
+        bitBucketTrigger([
+            [$class: 'BitBucketPPRRepositoryTriggerFilter', actionFilter: [$class: 'BitBucketPPRRepositoryPushActionFilter', allowedBranches: 'main', triggerAlsoIfNothingChanged: true, triggerAlsoIfTagPush: false, triggerOnlyIfTagPush: false]]
+        ])
     }
 
     environment {
@@ -71,10 +73,38 @@ pipeline {
             }
         }
 
+        stage('Check VM Type') {
+            steps {
+                bat '''
+                    set PGPASSWORD=%DB_PASSWORD%
+                    psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT sit_cod FROM sys_params;" > sitcod_output.txt
+                '''
+                script {
+                    env.SIT_COD = readFile('sitcod_output.txt').trim()
+                    echo "sit_cod: ${env.SIT_COD}"
+
+                    def hostUpper = env.DB_HOST.toUpperCase()
+                    if (hostUpper.startsWith('DCX')) {
+                        env.VM_TYPE = 'DCX'
+                    } else if (hostUpper.startsWith('SVR')) {
+                        env.VM_TYPE = 'CS'
+                    } else {
+                        env.VM_TYPE = 'UNKNOWN'
+                    }
+
+                    def expectedDigit = (env.VM_TYPE == 'DCX') ? '2' : (env.VM_TYPE == 'CS') ? '9' : null
+                    def fourthDigit = (env.SIT_COD?.length() >= 4) ? env.SIT_COD[3] : null
+
+                    env.VM_TYPE_VALID = (expectedDigit != null && fourthDigit == expectedDigit) as String
+                    echo "VM type: ${env.VM_TYPE}, expected 4th digit of sit_cod: ${expectedDigit}, actual: ${fourthDigit}, valid: ${env.VM_TYPE_VALID}"
+                }
+            }
+        }
+
         stage('Execute Upgrade Installer') {
             when {
                 expression {
-                    env.CHECKCON_PASSED == 'true' && env.PG_VERSION_MATCHED == 'true'
+                    env.CHECKCON_PASSED == 'true' && env.PG_VERSION_MATCHED == 'true' && env.VM_TYPE_VALID == 'true'
                 }
             }
             steps {

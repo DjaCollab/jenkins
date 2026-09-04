@@ -78,39 +78,36 @@ pipeline {
     parameters {
         string(
             name: 'TARGET_VMS',
-            defaultValue: 'SVR6-004-SEC,DCX4-004-SEC',
-            description: 'Comma-separated VM names to process. The hourly scheduled build uses this default value, so keep it narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
+            defaultValue: 'DCX2-007-SEC',
+            description: 'Comma-separated VM names to process. This is a manual test pipeline (no schedule) for validating changes - including the Teams card - before they touch PGUP. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST, DCX2-007-SEC'
         )
         string(
             name: 'INSTALLER_FILE',
             defaultValue: '',
-            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank on the hourly schedule - it auto-detects the newest installer under INSTALLER_DIR.'
+            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
         )
         string(
             name: 'INSTALLER_VERSION',
             defaultValue: '',
-            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank on the hourly schedule - it auto-detects the newest installer under INSTALLER_DIR.'
+            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
         )
         booleanParam(
             name: 'DRY_RUN',
             defaultValue: false,
-            description: 'Run every pre-check but skip the installer. The hourly schedule runs with this false (live) by default - set true only to validate a change without touching a database.'
+            description: 'Run every pre-check but skip the installer. Set true to validate a change without touching the TST database.'
         )
     }
 
     options {
-        // The hourly trigger must never stack a second run on top of one still in progress.
+        // A second manual run must never stack on top of one still in progress.
         disableConcurrentBuilds()
         timeout(time: 4, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
     }
 
-    triggers {
-        // Poll build_transfert (via the Z: mapping) once an hour for a new installer.
-        // 'H' spreads the actual minute across the hour to avoid a thundering herd of jobs
-        // all firing at :00.
-        cron('H * * * *')
-    }
+    // Manual-only, deliberately no cron trigger - this is a test pipeline for DCX2-003-TST,
+    // run by hand (e.g. "Build Now") whenever a change needs validating, including the Teams
+    // notification, without also auto-running unattended like PGUP does.
 
     environment {
         DB_PORT             = '1815'
@@ -168,7 +165,8 @@ pipeline {
                         [name: 'DCX2-004-SEC', extraArgs: ['/IbisSchema=CHM']],
                         [name: 'DCX4-004-SEC', extraArgs: []],
                         [name: 'DCX1-004-SEC', extraArgs: []],
-                        [name: 'DCX2-003-TST', extraArgs: []]
+                        [name: 'DCX2-003-TST', extraArgs: []],
+                        [name: 'DCX2-007-SEC', extraArgs: []]
                     ]
 
                     def requested = (params.TARGET_VMS ?: '').split(',').collect { it.trim().toUpperCase() }.findAll { it }
@@ -191,8 +189,8 @@ pipeline {
                     echo "Mode: ${params.DRY_RUN ? 'DRY_RUN - installer will be skipped' : 'LIVE upgrade'}"
                     echo "Targeting ${vms.size()} of ${allVms.size()} VM(s): ${vms.collect { it.name }.join(', ')}"
 
-                    // Which installer to apply. An explicit param forces a specific one; the
-                    // hourly schedule passes neither and auto-detects whatever is newest.
+                    // Which installer to apply. An explicit param forces a specific one; leaving
+                    // both blank auto-detects whatever is newest.
                     def wantedFile    = (params.INSTALLER_FILE ?: '').trim()
                     def wantedVersion = (params.INSTALLER_VERSION ?: '').trim()
                     def autoDetect    = !wantedFile && !wantedVersion
@@ -210,7 +208,7 @@ pipeline {
                     """).trim()
                     if (!resolved) {
                         if (autoDetect) {
-                            // Routine outcome of the hourly check, not a failure - just nothing new yet.
+                            // Routine outcome when nothing is staged, not a failure.
                             echo "No installer found under ${env.INSTALLER_DIR} (build_transfert) - nothing to do this run."
                             return
                         }
@@ -863,7 +861,7 @@ pipeline {
 <html>
 <head>
     <meta charset="utf-8">
-    <title>IBIS Database Upgrade Report</title>
+    <title>IBIS Database Upgrade Report (TEST)</title>
     <style>
         :root {
             --page:            #f9f9f7;
@@ -936,7 +934,7 @@ pipeline {
 </head>
 <body>
     <div class="container">
-        <h1>IBIS Database Upgrade Report</h1>
+        <h1>IBIS Database Upgrade Report (TEST)</h1>
         <p class="subtitle">Target build ${env.INSTALLER_LABEL} &middot; ${results.size()} VM(s) processed &middot; ${params.DRY_RUN ? 'DRY RUN - no installer executed' : 'live upgrade'} &middot; trigger: ${triggerCause}</p>
 
         <div class="tiles">
@@ -959,7 +957,7 @@ pipeline {
                             echo "Report written to upgrade_report.html and archived as a build artifact"
 
                             // Don't re-alert on a failure that's already been reported and hasn't changed -
-                            // that just repeats the same "known, unresolved" ping every hour. A failure is
+                            // that just repeats the same "known, unresolved" ping every run. A failure is
                             // "new" if this VM hasn't failed before, or has failed before but at a different
                             // target version (DB build and/or PG version) than what's recorded here. State
                             // persists in the workspace across builds since this job doesn't wipe it.
@@ -991,9 +989,11 @@ pipeline {
                             }
                             writeFile file: notifyStateFile, text: notifiedFailures.collect { k, v -> "${k}=${v}" }.join('\n')
 
-                            // Nothing to tell anyone if every VM was already up to date, or if the only
-                            // failures present are ones already notified and still unresolved.
-                            if (successCount > 0 || newFailureVms.size() > 0) {
+                            // Nothing to tell anyone on a live run if every VM was already up to date, or
+                            // if the only failures present are ones already notified and still unresolved.
+                            // A DRY_RUN always notifies regardless, since it's a deliberate validation run,
+                            // not the routine hourly noise the suppression logic exists to cut down on.
+                            if (params.DRY_RUN || successCount > 0 || newFailureVms.size() > 0) {
                                 def overallResult = currentBuild.currentResult ?: 'SUCCESS'
                                 def resultColor = (overallResult == 'SUCCESS') ? 'good' : (overallResult == 'FAILURE') ? 'attention' : 'warning'
                                 def resultIcon = (overallResult == 'SUCCESS') ? '✅' : (overallResult == 'FAILURE') ? '❌' : '⚠️'
@@ -1019,7 +1019,7 @@ pipeline {
                 "body": [
                     {
                         "type": "TextBlock",
-                        "text": "${resultIcon} IBIS Upgrade Report",
+                        "text": "${resultIcon} [TEST] IBIS Upgrade Report",
                         "size": "Large",
                         "weight": "Bolder",
                         "color": "${resultColor}"
