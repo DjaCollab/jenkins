@@ -119,29 +119,28 @@ pipeline {
         DB_USER             = 'dja'
         DB_PASSWORD         = credentials('db-password')
         PG_VERSION_EXPECTED = '17.10'
-        // Jenkins can't reach \\fti\root directly (outbound blocked), so installers are copied
-        // by hand from \\fti\root onto build_transfert (172.30.4.21) instead, and Z: is mapped
-        // to that VM's C$ share below. INSTALLER_DIR therefore points at the mapped drive, not
-        // the controller's own C:\Temp\Database.
-        INSTALLER_DIR       = 'Z:\\Temp\\Database'
-        // PostgreSQL engine installers are staged the same way, but in their own folder tree,
-        // e.g. "Z:\Temp\PG\PG17\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
-        PG_INSTALLER_DIR    = 'Z:\\Temp\\PG'
+        // DB packages and PG engine installers are both staged on the DBA team's share now,
+        // and Y: is mapped to \\10.140.6.15\public below (build_transfert is no longer used
+        // for either). INSTALLER_DIR/PG_INSTALLER_DIR point at their respective subfolders,
+        // e.g. "Y:\IBIS Database\SOFTW-01442-00 - IBIS Database 6.1.0.06.exe".
+        INSTALLER_DIR       = 'Y:\\IBIS Database'
+        // e.g. "Y:\PG Intaller\PG17\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
+        PG_INSTALLER_DIR    = 'Y:\\PG Intaller'
     }
 
     stages {
-        stage('Ensure build_transfert drive mapped') {
+        stage('Ensure installer drive mapped') {
             steps {
                 script {
-                    def driveCheckRc = bat(script: '@net use Z: >nul 2>&1', returnStatus: true)
+                    def driveCheckRc = bat(script: '@net use Y: >nul 2>&1', returnStatus: true)
                     if (driveCheckRc == 0) {
-                        echo 'Z: already mapped - reusing existing mapping'
+                        echo 'Y: already mapped - reusing existing mapping'
                     } else {
-                        echo 'Z: not mapped - mapping to \\\\172.30.4.21\\c$ (build_transfert)'
+                        echo 'Y: not mapped - mapping to \\\\10.140.6.15\\public'
                         withCredentials([usernamePassword(credentialsId: 'build_transfer', usernameVariable: 'SMB_USER', passwordVariable: 'SMB_PASSWORD')]) {
-                            def mapRc = bat(script: '@net use Z: \\\\172.30.4.21\\c$ /user:%SMB_USER% %SMB_PASSWORD%', returnStatus: true)
+                            def mapRc = bat(script: '@net use Y: \\\\10.140.6.15\\public /user:%SMB_USER% %SMB_PASSWORD%', returnStatus: true)
                             if (mapRc != 0) {
-                                error('Failed to map Z: to \\\\172.30.4.21\\c$ using the build_transfer credential.')
+                                error('Failed to map Y: to \\\\10.140.6.15\\public using the build_transfer credential.')
                             }
                         }
                     }
@@ -195,7 +194,7 @@ pipeline {
                     def wantedVersion = (params.INSTALLER_VERSION ?: '').trim()
                     def autoDetect    = !wantedFile && !wantedVersion
 
-                    // Resolve the staged installer on build_transfert (via the Z: mapping).
+                    // Resolve the staged installer on the DBA share (via the Y: mapping).
                     // New versions land in their own subfolder, e.g. "DB 6.1.0.06\SOFTW-01442-00 -
                     // IBIS Database 6.1.0.06.exe", so the search recurses instead of looking only
                     // directly inside INSTALLER_DIR. Groovy file access is blocked by the pipeline
@@ -209,10 +208,10 @@ pipeline {
                     if (!resolved) {
                         if (autoDetect) {
                             // Routine outcome when nothing is staged, not a failure.
-                            echo "No installer found under ${env.INSTALLER_DIR} (build_transfert) - nothing to do this run."
+                            echo "No installer found under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database) - nothing to do this run."
                             return
                         }
-                        error("No installer matching '${pattern}' under ${env.INSTALLER_DIR} (build_transfert). Copy the new version's folder from \\\\fti\\root there first.")
+                        error("No installer matching '${pattern}' under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database).")
                     }
                     env.INSTALLER_PATH = resolved
 
@@ -284,6 +283,73 @@ pipeline {
 
                     def results = []
 
+                    // Sent at most once per build, right when the first real install (PG or DB)
+                    // actually starts - never for a DRY_RUN or a VM that turns out already up to
+                    // date, since nothing real is happening in those cases.
+                    def upgradeInProgressNotified = false
+                    def notifyInProgress = { String hostName ->
+                        if (upgradeInProgressNotified) {
+                            return
+                        }
+                        upgradeInProgressNotified = true
+
+                        def pgTargetFactInProgress = pgUpgradeAvailable ? ",\n{\"title\": \"PG target version\", \"value\": \"${jsonEscape(env.PG_TARGET_VERSION)}\"}" : ''
+
+                        def inProgressCard = """{
+    "type": "message",
+    "attachments": [
+        {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "🔄 [TEST] IBIS Upgrade in progress",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "warning"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(triggerCause)} • started upgrading ${jsonEscape(hostName)}",
+                        "isSubtle": true,
+                        "wrap": true
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": "DB target build", "value": "${jsonEscape(env.INSTALLER_LABEL)}"}${pgTargetFactInProgress}
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.OpenUrl",
+                        "title": "View build",
+                        "url": "${env.BUILD_URL}"
+                    }
+                ]
+            }
+        }
+    ]
+}"""
+
+                        writeFile file: 'teams_card_in_progress.json', text: inProgressCard, encoding: 'UTF-8'
+                        withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
+                            try {
+                                powershell '''
+                                    Invoke-RestMethod -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_in_progress.json' | Out-Null
+                                '''
+                                echo "Teams in-progress notification sent"
+                            } catch (Exception teamsEx) {
+                                echo "Failed to send Teams in-progress notification: ${teamsEx.getMessage()}"
+                            }
+                        }
+                    }
+
                     // Order matters: CS (SVR*) must succeed before LIR (DCXA*/DCXB*/DCXC*), and LIR before the plain DCX group.
                     def phases = [
                         [label: 'CS',  vms: vms.findAll { classifyGroup(it.name) == 'CS' },  gate: true],
@@ -342,6 +408,7 @@ pipeline {
                                                     // 14 -> 17 is a major upgrade; 17.x -> 17.y within the same major is a minor one.
                                                     def pgInstallType = (currentMajor != env.PG_TARGET_MAJOR) ? 'PGupgrade' : 'PGminor'
                                                     echo "PostgreSQL engine on ${vm.name} is ${pgEngineVersion}, target is ${env.PG_TARGET_VERSION} - running /InstallType=${pgInstallType}"
+                                                    notifyInProgress(vm.name)
 
                                                     try {
                                                         def pgInstallOutput
@@ -605,6 +672,8 @@ pipeline {
                                                     detail << [label: 'Install', passed: null, value: 'Skipped - DRY_RUN (pre-checks passed)']
                                                     status = 'Skipped'
                                                 } else if (env.CHECKCON_PASSED == 'true' && env.PG_VERSION_MATCHED == 'true' && env.VM_TYPE_VALID == 'true' && env.SITE_TYPE_VALID == 'true' && env.SCHEMA_VERSION_VALID == 'true') {
+                                                    notifyInProgress(vm.name)
+
                                                     // Force out any remaining active connections rather than let them block the
                                                     // installer's exclusive lock - this disconnects whoever is currently using
                                                     // the database on this VM, right before the installer runs.
@@ -813,6 +882,11 @@ pipeline {
                             def successCount = results.count { it.status == 'Success' }
                             def failedCount  = results.count { it.status == 'Failed' }
                             def skippedCount = results.count { it.status == 'Skipped' }
+
+                            // Regression Tests runs in its own top-level stage/script block, which
+                            // doesn't see this stage's Groovy locals - hand it the successfully
+                            // upgraded VM list via env, the only thing that persists across stages.
+                            env.UPGRADED_VMS = results.findAll { it.status == 'Success' }.collect { it.name }.join(',')
 
                             def tile = { key, count ->
                                 def meta = statusMeta[key]
@@ -1051,7 +1125,10 @@ pipeline {
     ]
 }"""
 
-                                writeFile file: 'teams_card.json', text: teamsCard
+                                // Explicit UTF-8 - the card text has emoji and a bullet character, and
+                                // writeFile's default platform charset on Windows can mangle those into
+                                // invalid JSON, which Power Automate then rejects with a 400.
+                                writeFile file: 'teams_card.json', text: teamsCard, encoding: 'UTF-8'
                                 withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
                                     try {
                                         powershell '''
@@ -1072,8 +1149,51 @@ pipeline {
         }
         stage('Regression Tests') {
             steps {
-                // Placeholder - actual regression suite to be added later.
-                echo 'Regression starting...'
+                script {
+                    // Per regression.txt:
+                    //   1. db Integrity: run the checks without the pgdump - implemented below,
+                    //      re-running checkcon() against every VM actually upgraded this build.
+                    //   2. Workflow of a case creation (correlation + hit creation) - not yet.
+                    //   3. CHM - not yet.
+                    def upgradedVms = (env.UPGRADED_VMS ?: '').split(',').findAll { it }
+                    if (upgradedVms.isEmpty()) {
+                        echo 'Regression: no VM was upgraded this run - nothing to test.'
+                        return
+                    }
+
+                    echo "Regression starting for: ${upgradedVms.join(', ')}"
+                    for (host in upgradedVms) {
+                        env.DB_HOST = host
+                        def rc = bat(
+                            script: '''
+                                set PGPASSWORD=%DB_PASSWORD%
+                                psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT checkcon();" > regression_checkcon_output.txt
+                            ''',
+                            returnStatus: true
+                        )
+                        if (rc != 0) {
+                            currentBuild.result = 'FAILURE'
+                            echo "Regression FAILED on ${host}: could not run checkcon() (psql exit ${rc})"
+                            continue
+                        }
+
+                        def output = readFile('regression_checkcon_output.txt').trim()
+                        echo "Regression checkcon() on ${host}:\n${output}"
+                        def passed = (
+                            output.contains('0 disabled trigger found') &&
+                            output.contains('0 disabled constraint(s) found') &&
+                            output.contains('materialized view(s) refreshed') &&
+                            output.contains('Images and signatures partition definitions are compliant.') &&
+                            output.contains('Table scan_partitions is compliant.')
+                        )
+                        if (!passed) {
+                            currentBuild.result = 'FAILURE'
+                            echo "Regression FAILED on ${host}: checkcon() reported issues after the upgrade"
+                        } else {
+                            echo "Regression passed on ${host}"
+                        }
+                    }
+                }
             }
         }
     }
