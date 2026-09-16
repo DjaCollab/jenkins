@@ -138,7 +138,22 @@ def sendInProgressNotification(String hostName, boolean pgUpgradeAvailable) {
     withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
         try {
             powershell '''
-                Invoke-RestMethod -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_in_progress.json' | Out-Null
+                try {
+                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_in_progress.json' -UseBasicParsing
+                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                } catch {
+                    $statusCode = $null
+                    $body = $null
+                    if ($_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        if ($stream) {
+                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                        }
+                    }
+                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                    throw
+                }
             '''
             echo "Teams in-progress notification sent"
         } catch (Exception teamsEx) {
@@ -835,7 +850,7 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                 "body": [
                     {
                         "type": "TextBlock",
-                        "text": "${resultIcon} IBIS Upgrade Report",
+                        "text": "${resultIcon} IBIS DB Upgrade Report",
                         "size": "Large",
                         "weight": "Bolder",
                         "color": "${resultColor}"
@@ -874,7 +889,22 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                                 withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
                                     try {
                                         powershell '''
-                                            Invoke-RestMethod -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card.json' | Out-Null
+                                            try {
+                                                $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card.json' -UseBasicParsing
+                                                Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                                            } catch {
+                                                $statusCode = $null
+                                                $body = $null
+                                                if ($_.Exception.Response) {
+                                                    $statusCode = [int]$_.Exception.Response.StatusCode
+                                                    $stream = $_.Exception.Response.GetResponseStream()
+                                                    if ($stream) {
+                                                        $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                                                    }
+                                                }
+                                                Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                                                throw
+                                            }
                                         '''
                                         echo "Teams notification sent"
                                     } catch (Exception teamsEx) {
@@ -884,6 +914,284 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                             } else {
                                 echo "Skipping Teams notification - no VM was upgraded, and any failure(s) present were already notified for this version"
                             }
+}
+
+// Runs once before any VM is actually touched for install, using only a lightweight
+// connectivity + current-build check (no checkcon, no PG/schema/site-type gating - those
+// still happen for real in processVm right before the install itself). Purely to know which
+// target VMs are behind the staged build so the "starting in N minutes" warning below is
+// accurate rather than firing for VMs that turn out to already be up to date.
+def checkNeedsUpgrade(vmName) {
+    env.DB_HOST = vmName
+    def connRc = bat(
+        script: '''
+            set PGPASSWORD=%DB_PASSWORD%
+            psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -c "SELECT 1;"
+        ''',
+        returnStatus: true
+    )
+    if (connRc != 0) {
+        return [reachable: false]
+    }
+
+    def buildRc = bat(
+        script: '''
+            set PGPASSWORD=%DB_PASSWORD%
+            psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT last_pkg_update();" > pre_check_build.txt
+        ''',
+        returnStatus: true
+    )
+    def currentBuild = (buildRc == 0) ? extractBuildNumber(readFile('pre_check_build.txt').trim()) : null
+    if (!currentBuild) {
+        // last_pkg_update() doesn't exist on older schemas - same ibis_reg_history fallback
+        // processVm uses for the real, later check.
+        def regHistRc = bat(
+            script: '''
+                set PGPASSWORD=%DB_PASSWORD%
+                psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT * FROM ibis_reg_history ORDER BY tim DESC LIMIT 1;" > pre_check_reg_history.txt
+            ''',
+            returnStatus: true
+        )
+        currentBuild = (regHistRc == 0) ? extractBuildNumber(readFile('pre_check_reg_history.txt').trim()) : null
+    }
+
+    def needsUpgrade = !(currentBuild == env.INSTALLER_BUILD && !env.INSTALLER_HF)
+    return [reachable: true, currentBuild: currentBuild ?: 'unknown', needsUpgrade: needsUpgrade]
+}
+
+// Sent once, before any VM is actually touched, so operators get advance notice instead of
+// only finding out an upgrade is underway once it has already started (see
+// sendInProgressNotification for that per-VM "in progress" ping). Only fires when at least
+// one target VM is actually behind the staged build.
+def sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, toLabel) {
+    def vmFacts = vmsNeedingUpgrade.collect { "{\"title\": \"${jsonEscape(it)}\", \"value\": \"upgrade needed\"}" }.join(',\n')
+
+    def card = """{
+    "type": "message",
+    "attachments": [
+        {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "⚠️ Upgrade from ${jsonEscape(fromLabel)} to ${jsonEscape(toLabel)} of the following VMs will start in 10 minutes",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "warning",
+                        "wrap": true
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "isSubtle": true,
+                        "wrap": true
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            ${vmFacts}
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.OpenUrl",
+                        "title": "View build",
+                        "url": "${env.BUILD_URL}"
+                    }
+                ]
+            }
+        }
+    ]
+}"""
+
+    writeFile file: 'teams_card_pre_upgrade.json', text: card, encoding: 'UTF-8'
+    withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
+        try {
+            powershell '''
+                try {
+                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_pre_upgrade.json' -UseBasicParsing
+                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                } catch {
+                    $statusCode = $null
+                    $body = $null
+                    if ($_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        if ($stream) {
+                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                        }
+                    }
+                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                    throw
+                }
+            '''
+            echo "Teams pre-upgrade warning sent"
+        } catch (Exception teamsEx) {
+            echo "Failed to send Teams pre-upgrade warning: ${teamsEx.getMessage()}"
+        }
+    }
+}
+
+// Sent once, right as the Regression Tests stage begins, naming the VMs about to be checked.
+def sendRegressionStartNotification(vmNames) {
+    def vmList = vmNames.collect { jsonEscape(it) }.join(', ')
+
+    def card = """{
+    "type": "message",
+    "attachments": [
+        {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "🧪 Regression tests starting",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "warning"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "isSubtle": true,
+                        "wrap": true
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": "VMs", "value": "${vmList}"}
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.OpenUrl",
+                        "title": "View build",
+                        "url": "${env.BUILD_URL}"
+                    }
+                ]
+            }
+        }
+    ]
+}"""
+
+    writeFile file: 'teams_card_regression_start.json', text: card, encoding: 'UTF-8'
+    withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
+        try {
+            powershell '''
+                try {
+                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_regression_start.json' -UseBasicParsing
+                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                } catch {
+                    $statusCode = $null
+                    $body = $null
+                    if ($_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        if ($stream) {
+                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                        }
+                    }
+                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                    throw
+                }
+            '''
+            echo "Teams regression-start notification sent"
+        } catch (Exception teamsEx) {
+            echo "Failed to send Teams regression-start notification: ${teamsEx.getMessage()}"
+        }
+    }
+}
+
+// Sent once, at the end of the Regression Tests stage - a single pass/fail card naming exactly
+// which check(s) failed on which VM(s), so a failure is actionable without digging into the log.
+def sendRegressionResultNotification(regressionResults) {
+    def failedResults = regressionResults.findAll { !it.passed }
+    def resultIcon = failedResults.isEmpty() ? '✅' : '❌'
+    def resultColor = failedResults.isEmpty() ? 'good' : 'attention'
+    def summaryText = failedResults.isEmpty() ? 'Regression tests passed' : 'Regression tests FAILED'
+
+    def vmFacts = regressionResults.collect { r ->
+        def value = r.passed ? 'passed' : "FAILED - ${r.failedChecks.join(', ')}"
+        """{"title": "${jsonEscape(r.host)}", "value": "${jsonEscape(value)}"}"""
+    }.join(',\n')
+
+    def card = """{
+    "type": "message",
+    "attachments": [
+        {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "${resultIcon} ${summaryText}",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "${resultColor}"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "isSubtle": true,
+                        "wrap": true
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            ${vmFacts}
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.OpenUrl",
+                        "title": "View build",
+                        "url": "${env.BUILD_URL}"
+                    }
+                ]
+            }
+        }
+    ]
+}"""
+
+    writeFile file: 'teams_card_regression_result.json', text: card, encoding: 'UTF-8'
+    withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
+        try {
+            powershell '''
+                try {
+                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_regression_result.json' -UseBasicParsing
+                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                } catch {
+                    $statusCode = $null
+                    $body = $null
+                    if ($_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        if ($stream) {
+                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                        }
+                    }
+                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                    throw
+                }
+            '''
+            echo "Teams regression-result notification sent"
+        } catch (Exception teamsEx) {
+            echo "Failed to send Teams regression-result notification: ${teamsEx.getMessage()}"
+        }
+    }
 }
 
 pipeline {
@@ -1104,6 +1412,29 @@ pipeline {
 
                     def results = []
 
+                    stage('Pre-upgrade check') {
+                        // Lightweight check only - which target VMs are actually behind the staged
+                        // build. Skips the warning and wait entirely when nothing is actually behind.
+                        def vmsNeedingUpgrade = []
+                        def fromBuilds = []
+                        for (vm in vms) {
+                            def check = checkNeedsUpgrade(vm.name)
+                            if (check.reachable && check.needsUpgrade) {
+                                vmsNeedingUpgrade << vm.name
+                                fromBuilds << check.currentBuild
+                            }
+                        }
+
+                        if (vmsNeedingUpgrade) {
+                            def fromLabel = fromBuilds.unique().sort().join('/')
+                            sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, env.INSTALLER_LABEL)
+                            echo "Upgrade needed on: ${vmsNeedingUpgrade.join(', ')} - waiting 10 minutes before starting"
+                            sleep(time: 10, unit: 'MINUTES')
+                        } else {
+                            echo 'No target VM is behind the staged build - skipping the pre-upgrade warning and wait.'
+                        }
+                    }
+
                     // Order matters: CS (SVR*) must succeed before LIR (DCXA*/DCXB*/DCXC*), and LIR before the plain DCX group.
                     def phases = [
                         [label: 'CS',  vms: vms.findAll { classifyGroup(it.name) == 'CS' },  gate: true],
@@ -1189,7 +1520,19 @@ pipeline {
                         return
                     }
 
+                    sendRegressionStartNotification(upgradedVms)
+
                     echo "Regression starting for: ${upgradedVms.join(', ')}"
+                    // Each key is the exact substring checkcon() prints when that check passes;
+                    // the value is what to report when it's ABSENT (i.e. the check failed).
+                    def checkDescriptions = [
+                        '0 disabled trigger found'                                : 'disabled triggers found',
+                        '0 disabled constraint(s) found'                          : 'disabled constraints found',
+                        'materialized view(s) refreshed'                          : 'materialized views not refreshed',
+                        'Images and signatures partition definitions are compliant.': 'partition definitions non-compliant',
+                        'Table scan_partitions is compliant.'                     : 'scan_partitions non-compliant'
+                    ]
+                    def regressionResults = []
                     for (host in upgradedVms) {
                         env.DB_HOST = host
                         def rc = bat(
@@ -1202,25 +1545,24 @@ pipeline {
                         if (rc != 0) {
                             currentBuild.result = 'FAILURE'
                             echo "Regression FAILED on ${host}: could not run checkcon() (psql exit ${rc})"
+                            regressionResults << [host: host, passed: false, failedChecks: ["could not run checkcon() (psql exit ${rc})"]]
                             continue
                         }
 
                         def output = readFile('regression_checkcon_output.txt').trim()
                         echo "Regression checkcon() on ${host}:\n${output}"
-                        def passed = (
-                            output.contains('0 disabled trigger found') &&
-                            output.contains('0 disabled constraint(s) found') &&
-                            output.contains('materialized view(s) refreshed') &&
-                            output.contains('Images and signatures partition definitions are compliant.') &&
-                            output.contains('Table scan_partitions is compliant.')
-                        )
-                        if (!passed) {
+                        def failedChecks = checkDescriptions.findAll { marker, label -> !output.contains(marker) }.collect { marker, label -> label }
+                        if (failedChecks) {
                             currentBuild.result = 'FAILURE'
-                            echo "Regression FAILED on ${host}: checkcon() reported issues after the upgrade"
+                            echo "Regression FAILED on ${host}: ${failedChecks.join(', ')}"
+                            regressionResults << [host: host, passed: false, failedChecks: failedChecks]
                         } else {
                             echo "Regression passed on ${host}"
+                            regressionResults << [host: host, passed: true, failedChecks: []]
                         }
                     }
+
+                    sendRegressionResultNotification(regressionResults)
                 }
             }
         }
