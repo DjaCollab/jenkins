@@ -790,7 +790,7 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                             echo "Report written to upgrade_report.html and archived as a build artifact"
 
                             // Don't re-alert on a failure that's already been reported and hasn't changed -
-                            // that just repeats the same "known, unresolved" ping every hour. A failure is
+                            // that just repeats the same "known, unresolved" ping every night. A failure is
                             // "new" if this VM hasn't failed before, or has failed before but at a different
                             // target version (DB build and/or PG version) than what's recorded here. State
                             // persists in the workspace across builds since this job doesn't wipe it.
@@ -1201,37 +1201,35 @@ pipeline {
         string(
             name: 'TARGET_VMS',
             defaultValue: 'SVR3-009-SEC,DCXA-004-SEC,DCX2-004-SEC,DCX3-004-SEC,SVR5-004-SEC,SVR4-004-SEC,DCX1-004-SEC,DCXC-004-SEC',
-            description: 'Comma-separated VM names to process. The hourly scheduled build uses this default value, so keep it narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
+            description: 'Comma-separated VM names to process. The nightly scheduled build uses this default value, so keep it narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
         )
         string(
             name: 'INSTALLER_FILE',
             defaultValue: '',
-            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank on the hourly schedule - it auto-detects the newest installer under INSTALLER_DIR.'
+            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank on the nightly schedule - it auto-detects the newest installer under INSTALLER_DIR.'
         )
         string(
             name: 'INSTALLER_VERSION',
             defaultValue: '',
-            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank on the hourly schedule - it auto-detects the newest installer under INSTALLER_DIR.'
+            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank on the nightly schedule - it auto-detects the newest installer under INSTALLER_DIR.'
         )
         booleanParam(
             name: 'DRY_RUN',
             defaultValue: false,
-            description: 'Run every pre-check but skip the installer. The hourly schedule runs with this false (live) by default - set true only to validate a change without touching a database.'
+            description: 'Run every pre-check but skip the installer. The nightly schedule runs with this false (live) by default - set true only to validate a change without touching a database.'
         )
     }
 
     options {
-        // The hourly trigger must never stack a second run on top of one still in progress.
+        // A manually triggered run must never stack on top of the nightly one still in progress.
         disableConcurrentBuilds()
         timeout(time: 4, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
     }
 
     triggers {
-        // Poll the DBA share (via the Y: mapping) once an hour for a new installer.
-        // 'H' spreads the actual minute across the hour to avoid a thundering herd of jobs
-        // all firing at :00.
-        cron('H * * * *')
+        // Poll the DBA share (via the Y: mapping) once a night at 1 AM for a new installer.
+        cron('0 1 * * *')
     }
 
     environment {
@@ -1318,7 +1316,7 @@ pipeline {
                     echo "Targeting ${vms.size()} of ${allVms.size()} VM(s): ${vms.collect { it.name }.join(', ')}"
 
                     // Which installer to apply. An explicit param forces a specific one; the
-                    // hourly schedule passes neither and auto-detects whatever is newest.
+                    // nightly schedule passes neither and auto-detects whatever is newest.
                     def wantedFile    = (params.INSTALLER_FILE ?: '').trim()
                     def wantedVersion = (params.INSTALLER_VERSION ?: '').trim()
                     def autoDetect    = !wantedFile && !wantedVersion
@@ -1336,7 +1334,7 @@ pipeline {
                     """).trim()
                     if (!resolved) {
                         if (autoDetect) {
-                            // Routine outcome of the hourly check, not a failure - just nothing new yet.
+                            // Routine outcome of the nightly check, not a failure - just nothing new yet.
                             echo "No installer found under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database) - nothing to do this run."
                             return
                         }
