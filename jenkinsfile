@@ -1411,25 +1411,32 @@ pipeline {
                     def results = []
 
                     stage('Pre-upgrade check') {
-                        // Lightweight check only - which target VMs are actually behind the staged
-                        // build. Skips the warning and wait entirely when nothing is actually behind.
-                        def vmsNeedingUpgrade = []
-                        def fromBuilds = []
-                        for (vm in vms) {
-                            def check = checkNeedsUpgrade(vm.name)
-                            if (check.reachable && check.needsUpgrade) {
-                                vmsNeedingUpgrade << vm.name
-                                fromBuilds << check.currentBuild
-                            }
-                        }
-
-                        if (vmsNeedingUpgrade) {
-                            def fromLabel = fromBuilds.unique().sort().join('/')
-                            sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, env.INSTALLER_LABEL)
-                            echo "Upgrade needed on: ${vmsNeedingUpgrade.join(', ')} - waiting 30 minutes before starting"
-                            sleep(time: 30, unit: 'MINUTES')
+                        // A DRY_RUN never actually installs anything, so a "will start in N
+                        // minutes" warning followed by a real wait would be misleading and just
+                        // waste time on a validation-only run - skip the whole check.
+                        if (params.DRY_RUN) {
+                            echo 'DRY_RUN: skipping the pre-upgrade warning and wait.'
                         } else {
-                            echo 'No target VM is behind the staged build - skipping the pre-upgrade warning and wait.'
+                            // Lightweight check only - which target VMs are actually behind the
+                            // staged build. Skips the warning and wait entirely when nothing is behind.
+                            def vmsNeedingUpgrade = []
+                            def fromBuilds = []
+                            for (vm in vms) {
+                                def check = checkNeedsUpgrade(vm.name)
+                                if (check.reachable && check.needsUpgrade) {
+                                    vmsNeedingUpgrade << vm.name
+                                    fromBuilds << check.currentBuild
+                                }
+                            }
+
+                            if (vmsNeedingUpgrade) {
+                                def fromLabel = fromBuilds.unique().sort().join('/')
+                                sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, env.INSTALLER_LABEL)
+                                echo "Upgrade needed on: ${vmsNeedingUpgrade.join(', ')} - waiting 30 minutes before starting"
+                                sleep(time: 30, unit: 'MINUTES')
+                            } else {
+                                echo 'No target VM is behind the staged build - skipping the pre-upgrade warning and wait.'
+                            }
                         }
                     }
 
