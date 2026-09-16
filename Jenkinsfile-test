@@ -111,7 +111,7 @@ def sendInProgressNotification(String hostName, boolean pgUpgradeAvailable) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)} • started upgrading ${jsonEscape(hostName)}",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)} • started upgrading ${jsonEscape(hostName)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -831,7 +831,7 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${params.DRY_RUN ? 'DRY_RUN' : 'LIVE upgrade'} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "text": "${params.DRY_RUN ? 'DRY_RUN' : 'LIVE upgrade'} • ${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -957,7 +957,7 @@ def sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, toLabel) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -1031,7 +1031,7 @@ def sendRegressionStartNotification(vmNames) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -1114,7 +1114,7 @@ def sendRegressionResultNotification(regressionResults) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },

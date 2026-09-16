@@ -111,7 +111,7 @@ def sendInProgressNotification(String hostName, boolean pgUpgradeAvailable) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)} • started upgrading ${jsonEscape(hostName)}",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)} • started upgrading ${jsonEscape(hostName)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -857,7 +857,7 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${params.DRY_RUN ? 'DRY_RUN' : 'LIVE upgrade'} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "text": "${params.DRY_RUN ? 'DRY_RUN' : 'LIVE upgrade'} • ${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -978,7 +978,7 @@ def sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, toLabel) {
                 "body": [
                     {
                         "type": "TextBlock",
-                        "text": "⚠️ Upgrade from ${jsonEscape(fromLabel)} to ${jsonEscape(toLabel)} of the following VMs will start in 10 minutes",
+                        "text": "⚠️ Upgrade from ${jsonEscape(fromLabel)} to ${jsonEscape(toLabel)} of the following VMs will start in 30 minutes",
                         "size": "Large",
                         "weight": "Bolder",
                         "color": "warning",
@@ -986,7 +986,7 @@ def sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, toLabel) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -1060,7 +1060,7 @@ def sendRegressionStartNotification(vmNames) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -1143,7 +1143,7 @@ def sendRegressionResultNotification(regressionResults) {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)}",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -1428,8 +1428,8 @@ pipeline {
                         if (vmsNeedingUpgrade) {
                             def fromLabel = fromBuilds.unique().sort().join('/')
                             sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, env.INSTALLER_LABEL)
-                            echo "Upgrade needed on: ${vmsNeedingUpgrade.join(', ')} - waiting 10 minutes before starting"
-                            sleep(time: 10, unit: 'MINUTES')
+                            echo "Upgrade needed on: ${vmsNeedingUpgrade.join(', ')} - waiting 30 minutes before starting"
+                            sleep(time: 30, unit: 'MINUTES')
                         } else {
                             echo 'No target VM is behind the staged build - skipping the pre-upgrade warning and wait.'
                         }
