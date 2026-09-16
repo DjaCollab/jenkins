@@ -72,230 +72,27 @@ def extractPgTargetVersion(String releaseNotesText) {
     return last
 }
 
-pipeline {
-    agent { label 'built-in' }
+// These helper methods (below) are declared at the top level rather than inline in the
+// pipeline's script{} blocks so that each one is CPS-transformed as its own JVM method -
+// one giant script{} block over ~1000 lines hit "Method too large" (the 64KB per-method
+// bytecode limit) once the report/Teams HTML and per-VM logic were all one method. They
+// are deliberately NOT @NonCPS - they call pipeline steps (bat, echo, powershell, stage,
+// writeFile, error, currentBuild), which requires the CPS interpreter. They read shared
+// state via env (a plain Groovy local/closure from one script{} block isn't visible to a
+// separate top-level method).
 
-    parameters {
-        string(
-            name: 'TARGET_VMS',
-            defaultValue: 'DCX2-007-SEC',
-            description: 'Comma-separated VM names to process. This is a manual test pipeline (no schedule) for validating changes - including the Teams card - before they touch PGUP. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST, DCX2-007-SEC'
-        )
-        string(
-            name: 'INSTALLER_FILE',
-            defaultValue: '',
-            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
-        )
-        string(
-            name: 'INSTALLER_VERSION',
-            defaultValue: '',
-            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
-        )
-        booleanParam(
-            name: 'DRY_RUN',
-            defaultValue: false,
-            description: 'Run every pre-check but skip the installer. Set true to validate a change without touching the TST database.'
-        )
+// Sent at most once per build, right when the first real install (PG or DB) actually
+// starts - never for a DRY_RUN or a VM that turns out already up to date, since nothing
+// real is happening in those cases.
+def sendInProgressNotification(String hostName, boolean pgUpgradeAvailable) {
+    if (env.UPGRADE_IN_PROGRESS_NOTIFIED == 'true') {
+        return
     }
+    env.UPGRADE_IN_PROGRESS_NOTIFIED = 'true'
 
-    options {
-        // A second manual run must never stack on top of one still in progress.
-        disableConcurrentBuilds()
-        timeout(time: 4, unit: 'HOURS')
-        buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
-    }
+    def pgTargetFactInProgress = pgUpgradeAvailable ? ",\n{\"title\": \"PG target version\", \"value\": \"${jsonEscape(env.PG_TARGET_VERSION)}\"}" : ''
 
-    // Manual-only, deliberately no cron trigger - this is a test pipeline for DCX2-003-TST,
-    // run by hand (e.g. "Build Now") whenever a change needs validating, including the Teams
-    // notification, without also auto-running unattended like PGUP does.
-
-    environment {
-        DB_PORT             = '1815'
-        // dja is only granted access via hostssl rules in pg_hba.conf, so an
-        // unencrypted connection matches nothing and is rejected. Force SSL.
-        PGSSLMODE           = 'require'
-        DB_NAME             = 'ibis'
-        DB_DOMAIN           = 'SEC'
-        DB_USER             = 'dja'
-        DB_PASSWORD         = credentials('db-password')
-        PG_VERSION_EXPECTED = '17.10'
-        // DB packages and PG engine installers are both staged on the DBA team's share now,
-        // and Y: is mapped to \\10.140.6.15\public below (build_transfert is no longer used
-        // for either). INSTALLER_DIR/PG_INSTALLER_DIR point at their respective subfolders,
-        // e.g. "Y:\IBIS Database\SOFTW-01442-00 - IBIS Database 6.1.0.06.exe".
-        INSTALLER_DIR       = 'Y:\\IBIS Database'
-        // e.g. "Y:\PG Intaller\PG17\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
-        PG_INSTALLER_DIR    = 'Y:\\PG Intaller'
-    }
-
-    stages {
-        stage('Ensure installer drive mapped') {
-            steps {
-                script {
-                    def driveCheckRc = bat(script: '@net use Y: >nul 2>&1', returnStatus: true)
-                    if (driveCheckRc == 0) {
-                        echo 'Y: already mapped - reusing existing mapping'
-                    } else {
-                        echo 'Y: not mapped - mapping to \\\\10.140.6.15\\public'
-                        withCredentials([usernamePassword(credentialsId: 'build_transfer', usernameVariable: 'SMB_USER', passwordVariable: 'SMB_PASSWORD')]) {
-                            def mapRc = bat(script: '@net use Y: \\\\10.140.6.15\\public /user:%SMB_USER% %SMB_PASSWORD%', returnStatus: true)
-                            if (mapRc != 0) {
-                                error('Failed to map Y: to \\\\10.140.6.15\\public using the build_transfer credential.')
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        stage('Upgrade VMs') {
-            steps {
-                script {
-                    // Authoritative registry of every VM and its installer overrides.
-                    // TARGET_VMS selects a subset from this list; it never adds to it.
-                    def allVms = [
-                        [name: 'SVR4-004-SEC', extraArgs: []],
-                        [name: 'SVR3-009-SEC', extraArgs: []],
-                        [name: 'SVR5-004-SEC', extraArgs: []],
-                        [name: 'SVR6-004-SEC', extraArgs: []],
-                        [name: 'DCXA-004-SEC', extraArgs: []],
-                        [name: 'DCXB-004-SEC', extraArgs: []],
-                        [name: 'DCXC-004-SEC', extraArgs: []],
-                        [name: 'DCX2-003-SEC', extraArgs: []],
-                        [name: 'DCX2-004-SEC', extraArgs: ['/IbisSchema=CHM']],
-                        [name: 'DCX4-004-SEC', extraArgs: []],
-                        [name: 'DCX1-004-SEC', extraArgs: []],
-                        [name: 'DCX2-003-TST', extraArgs: []],
-                        [name: 'DCX2-007-SEC', extraArgs: []]
-                    ]
-
-                    def requested = (params.TARGET_VMS ?: '').split(',').collect { it.trim().toUpperCase() }.findAll { it }
-                    if (!requested) {
-                        error('TARGET_VMS is empty - nothing to process.')
-                    }
-                    def knownNames = allVms.collect { it.name.toUpperCase() }
-                    def unknown = requested.findAll { !knownNames.contains(it) }
-                    if (unknown) {
-                        error("Unknown VM name(s) in TARGET_VMS: ${unknown.join(', ')}. Valid names: ${allVms.collect { it.name }.join(', ')}")
-                    }
-                    def vms = allVms.findAll { requested.contains(it.name.toUpperCase()) }
-
-                    def triggerCause = 'unknown'
-                    try {
-                        triggerCause = currentBuild.getBuildCauses().collect { it.shortDescription }.join(', ')
-                    } catch (Exception ignored) { }
-
-                    echo "Trigger: ${triggerCause}"
-                    echo "Mode: ${params.DRY_RUN ? 'DRY_RUN - installer will be skipped' : 'LIVE upgrade'}"
-                    echo "Targeting ${vms.size()} of ${allVms.size()} VM(s): ${vms.collect { it.name }.join(', ')}"
-
-                    // Which installer to apply. An explicit param forces a specific one; leaving
-                    // both blank auto-detects whatever is newest.
-                    def wantedFile    = (params.INSTALLER_FILE ?: '').trim()
-                    def wantedVersion = (params.INSTALLER_VERSION ?: '').trim()
-                    def autoDetect    = !wantedFile && !wantedVersion
-
-                    // Resolve the staged installer on the DBA share (via the Y: mapping).
-                    // New versions land in their own subfolder, e.g. "DB 6.1.0.06\SOFTW-01442-00 -
-                    // IBIS Database 6.1.0.06.exe", so the search recurses instead of looking only
-                    // directly inside INSTALLER_DIR. Groovy file access is blocked by the pipeline
-                    // sandbox, so the lookup runs through PowerShell.
-                    def pattern = wantedFile ?: (wantedVersion ? "*${wantedVersion}*.exe" : '*.exe')
-                    def resolved = powershell(returnStdout: true, script: """
-                        \$f = Get-ChildItem -Path '${env.INSTALLER_DIR}' -Recurse -Filter '${pattern}' -File -ErrorAction SilentlyContinue |
-                              Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                        if (\$f) { Write-Output \$f.FullName }
-                    """).trim()
-                    if (!resolved) {
-                        if (autoDetect) {
-                            // Routine outcome when nothing is staged, not a failure.
-                            echo "No installer found under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database) - nothing to do this run."
-                            return
-                        }
-                        error("No installer matching '${pattern}' under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database).")
-                    }
-                    env.INSTALLER_PATH = resolved
-
-                    def resolvedName = resolved.tokenize('\\').last()
-                    env.INSTALLER_BUILD = extractBuildNumber(resolvedName)
-                    if (!env.INSTALLER_BUILD) {
-                        error("Cannot read a build number from '${resolvedName}'. The file name must contain x.x.x.x.")
-                    }
-
-                    // A hotfix is named "... 6.0.0.107 HF1.4.exe" but last_pkg_update() is not
-                    // known to report the HF marker, so a hotfix can never be proven to be
-                    // already installed. It is always applied rather than skipped.
-                    env.INSTALLER_HF    = extractHotfix(resolvedName) ?: ''
-                    env.INSTALLER_LABEL = env.INSTALLER_HF ? "${env.INSTALLER_BUILD} ${env.INSTALLER_HF}" : env.INSTALLER_BUILD
-
-                    echo "Installer: ${env.INSTALLER_PATH}"
-                    echo "Installer build: ${env.INSTALLER_LABEL}"
-
-                    // The PostgreSQL engine upgrade always precedes the database upgrade, so
-                    // resolve it once up front, same as the database installer above. Absence
-                    // of a new version folder is normal - most runs have nothing to do here.
-                    def pgFolder = powershell(returnStdout: true, script: """
-                        \$d = Get-ChildItem -Path '${env.PG_INSTALLER_DIR}' -Directory -ErrorAction SilentlyContinue |
-                              Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                        if (\$d) { Write-Output \$d.FullName }
-                    """).trim()
-
-                    def pgUpgradeAvailable = false
-                    if (pgFolder) {
-                        def pgExe = powershell(returnStdout: true, script: """
-                            \$f = Get-ChildItem -LiteralPath '${pgFolder}' -Filter '*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                            if (\$f) { Write-Output \$f.FullName }
-                        """).trim()
-                        // The release notes file name varies per release but always contains
-                        // "Release Notes", e.g. "SOFTW-01398-00 - PostgreSQL 17 Installer Release Notes.txt".
-                        def pgNotesPath = powershell(returnStdout: true, script: """
-                            \$f = Get-ChildItem -LiteralPath '${pgFolder}' -Filter '*Release Notes*.txt' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                            if (\$f) { Write-Output \$f.FullName }
-                        """).trim()
-
-                        if (!pgExe || !pgNotesPath) {
-                            error("Found PostgreSQL folder '${pgFolder}' but it is missing the installer .exe or a '*Release Notes*.txt' file - cannot determine the target version safely.")
-                        }
-
-                        def pgNotesText = powershell(returnStdout: true, script: "Get-Content -LiteralPath '${pgNotesPath}' -Raw").trim()
-                        def pgTargetVersion = extractPgTargetVersion(pgNotesText)
-                        if (!pgTargetVersion) {
-                            error("Could not read a target PostgreSQL version (e.g. '17.6') out of '${pgNotesPath}'.")
-                        }
-
-                        env.PG_EXE_PATH       = pgExe
-                        env.PG_TARGET_VERSION = pgTargetVersion
-                        env.PG_TARGET_MAJOR   = pgTargetVersion.tokenize('.')[0]
-                        pgUpgradeAvailable    = true
-
-                        echo "PostgreSQL installer: ${env.PG_EXE_PATH}"
-                        echo "PostgreSQL target version: ${env.PG_TARGET_VERSION} (per ${pgNotesPath})"
-
-                        // Same release notes file also states the minimum IBIS schema version
-                        // (last_update()) required before the DB package can be applied. Not
-                        // every release notes file states one, so its absence is not an error.
-                        env.MIN_SCHEMA_VERSION = extractMinSchemaVersion(pgNotesText) ?: ''
-                        if (env.MIN_SCHEMA_VERSION) {
-                            echo "Minimum required schema version: ${env.MIN_SCHEMA_VERSION} (per ${pgNotesPath})"
-                        }
-                    } else {
-                        echo "No new PostgreSQL version folder under ${env.PG_INSTALLER_DIR} - skipping PostgreSQL engine check."
-                    }
-
-                    def results = []
-
-                    // Sent at most once per build, right when the first real install (PG or DB)
-                    // actually starts - never for a DRY_RUN or a VM that turns out already up to
-                    // date, since nothing real is happening in those cases.
-                    def upgradeInProgressNotified = false
-                    def notifyInProgress = { String hostName ->
-                        if (upgradeInProgressNotified) {
-                            return
-                        }
-                        upgradeInProgressNotified = true
-
-                        def pgTargetFactInProgress = pgUpgradeAvailable ? ",\n{\"title\": \"PG target version\", \"value\": \"${jsonEscape(env.PG_TARGET_VERSION)}\"}" : ''
-
-                        def inProgressCard = """{
+    def inProgressCard = """{
     "type": "message",
     "attachments": [
         {
@@ -314,7 +111,7 @@ pipeline {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(triggerCause)} • started upgrading ${jsonEscape(hostName)}",
+                        "text": "Build #${env.BUILD_NUMBER} • ${jsonEscape(env.TRIGGER_CAUSE)} • started upgrading ${jsonEscape(hostName)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -337,40 +134,23 @@ pipeline {
     ]
 }"""
 
-                        writeFile file: 'teams_card_in_progress.json', text: inProgressCard, encoding: 'UTF-8'
-                        withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
-                            try {
-                                powershell '''
-                                    Invoke-RestMethod -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_in_progress.json' | Out-Null
-                                '''
-                                echo "Teams in-progress notification sent"
-                            } catch (Exception teamsEx) {
-                                echo "Failed to send Teams in-progress notification: ${teamsEx.getMessage()}"
-                            }
-                        }
-                    }
+    writeFile file: 'teams_card_in_progress.json', text: inProgressCard, encoding: 'UTF-8'
+    withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
+        try {
+            powershell '''
+                Invoke-RestMethod -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_in_progress.json' | Out-Null
+            '''
+            echo "Teams in-progress notification sent"
+        } catch (Exception teamsEx) {
+            echo "Failed to send Teams in-progress notification: ${teamsEx.getMessage()}"
+        }
+    }
+}
 
-                    // Order matters: CS (SVR*) must succeed before LIR (DCXA*/DCXB*/DCXC*), and LIR before the plain DCX group.
-                    def phases = [
-                        [label: 'CS',  vms: vms.findAll { classifyGroup(it.name) == 'CS' },  gate: true],
-                        [label: 'LIR', vms: vms.findAll { classifyGroup(it.name) == 'LIR' }, gate: true],
-                        [label: 'DCX', vms: vms.findAll { classifyGroup(it.name) == 'DCX' }, gate: false]
-                    ]
+def processVm(vm, group, pgUpgradeAvailable, detail) {
+    def version = 'N/A'
+    def status = 'Failed'
 
-                    try {
-                        for (phase in phases) {
-                            if (phase.vms.isEmpty()) {
-                                continue
-                            }
-
-                            stage("Phase: ${phase.label}") {
-                                for (vm in phase.vms) {
-                                    def group = phase.label
-                                    def detail = []
-                                    def version = 'N/A'
-                                    def status = 'Failed'
-
-                                    try {
                                         stage("Process ${vm.name}") {
                                             env.DB_HOST = vm.name
 
@@ -408,7 +188,7 @@ pipeline {
                                                     // 14 -> 17 is a major upgrade; 17.x -> 17.y within the same major is a minor one.
                                                     def pgInstallType = (currentMajor != env.PG_TARGET_MAJOR) ? 'PGupgrade' : 'PGminor'
                                                     echo "PostgreSQL engine on ${vm.name} is ${pgEngineVersion}, target is ${env.PG_TARGET_VERSION} - running /InstallType=${pgInstallType}"
-                                                    notifyInProgress(vm.name)
+                                                    sendInProgressNotification(vm.name, pgUpgradeAvailable)
 
                                                     try {
                                                         def pgInstallOutput
@@ -672,7 +452,7 @@ pipeline {
                                                     detail << [label: 'Install', passed: null, value: 'Skipped - DRY_RUN (pre-checks passed)']
                                                     status = 'Skipped'
                                                 } else if (env.CHECKCON_PASSED == 'true' && env.PG_VERSION_MATCHED == 'true' && env.VM_TYPE_VALID == 'true' && env.SITE_TYPE_VALID == 'true' && env.SCHEMA_VERSION_VALID == 'true') {
-                                                    notifyInProgress(vm.name)
+                                                    sendInProgressNotification(vm.name, pgUpgradeAvailable)
 
                                                     // Force out any remaining active connections rather than let them block the
                                                     // installer's exclusive lock - this disconnects whoever is currently using
@@ -827,47 +607,11 @@ pipeline {
                                                 status = 'Failed'
                                             }
                                         }
-                                    } catch (Exception e) {
-                                        echo "VM ${vm.name} processing failed unexpectedly: ${e.getMessage()}"
-                                        detail << [label: 'Unexpected error', passed: false, value: e.getMessage()]
-                                        status = 'Failed'
-                                        currentBuild.result = 'FAILURE'
-                                    }
 
-                                    // A pre-check failure (active connections, PG version not yet upgraded, etc.)
-                                    // is expected, routine output of a DRY_RUN - it means "not ready yet", not
-                                    // "something is broken" - so it shouldn't flip the whole build to FAILURE.
-                                    // An unexpected exception still does, via the catch block above.
-                                    if (status == 'Failed' && !params.DRY_RUN) {
-                                        currentBuild.result = 'FAILURE'
-                                    }
+    return [version: version, status: status]
+}
 
-                                    results << [name: vm.name, phase: group, version: version, status: status, detail: detail]
-
-                                    // A failed PostgreSQL engine upgrade aborts the whole pipeline rather
-                                    // than just this VM - the database upgrade must never run against an
-                                    // engine left in an unknown/half-upgraded state. This is deliberately
-                                    // outside the per-VM try/catch above so it isn't swallowed as a
-                                    // per-VM failure; it still reaches the Generate Report stage via the
-                                    // outer try/finally before failing the build.
-                                    if (env.PG_UPGRADE_ABORTED == 'true') {
-                                        error("Aborting: ${env.PG_UPGRADE_ERROR}")
-                                    }
-                                }
-                            }
-
-                            // Same reasoning as above - DRY_RUN should finish checking every phase to give a
-                            // full picture, not abort partway through on a routine "not ready yet" pre-check.
-                            if (phase.gate && !params.DRY_RUN) {
-                                def phaseVmNames = phase.vms.collect { it.name }
-                                def phaseFailures = results.findAll { it.name in phaseVmNames && it.status == 'Failed' }
-                                if (phaseFailures) {
-                                    error("Stopping pipeline: ${phase.label} phase had failure(s) on: ${phaseFailures.collect { it.name }.join(', ')}")
-                                }
-                            }
-                        }
-                    } finally {
-                        stage('Generate Report') {
+def generateReportAndNotify(results, pgUpgradeAvailable) {
                             def statusMeta = [
                                 'Success': [icon: '&#10003;', label: 'Success', token: 'good'],
                                 'Failed':  [icon: '&#10007;', label: 'Failed',  token: 'critical'],
@@ -1009,7 +753,7 @@ pipeline {
 <body>
     <div class="container">
         <h1>IBIS Database Upgrade Report (TEST)</h1>
-        <p class="subtitle">Target build ${env.INSTALLER_LABEL} &middot; ${results.size()} VM(s) processed &middot; ${params.DRY_RUN ? 'DRY RUN - no installer executed' : 'live upgrade'} &middot; trigger: ${triggerCause}</p>
+        <p class="subtitle">Target build ${env.INSTALLER_LABEL} &middot; ${results.size()} VM(s) processed &middot; ${params.DRY_RUN ? 'DRY RUN - no installer executed' : 'live upgrade'} &middot; trigger: ${env.TRIGGER_CAUSE}</p>
 
         <div class="tiles">
             ${tile('Success', successCount)}
@@ -1100,7 +844,7 @@ pipeline {
                     },
                     {
                         "type": "TextBlock",
-                        "text": "Build #${env.BUILD_NUMBER} • ${params.DRY_RUN ? 'DRY_RUN' : 'LIVE upgrade'} • ${jsonEscape(triggerCause)}",
+                        "text": "Build #${env.BUILD_NUMBER} • ${params.DRY_RUN ? 'DRY_RUN' : 'LIVE upgrade'} • ${jsonEscape(env.TRIGGER_CAUSE)}",
                         "isSubtle": true,
                         "wrap": true
                     },
@@ -1142,6 +886,289 @@ pipeline {
                             } else {
                                 echo "Skipping Teams notification - no VM was upgraded, and any failure(s) present were already notified for this version"
                             }
+}
+
+pipeline {
+    agent { label 'built-in' }
+
+    parameters {
+        string(
+            name: 'TARGET_VMS',
+            defaultValue: 'DCX2-007-SEC',
+            description: 'Comma-separated VM names to process. This is a manual test pipeline (no schedule) for validating changes - including the Teams card - before they touch PGUP. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST, DCX2-007-SEC'
+        )
+        string(
+            name: 'INSTALLER_FILE',
+            defaultValue: '',
+            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
+        )
+        string(
+            name: 'INSTALLER_VERSION',
+            defaultValue: '',
+            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
+        )
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Run every pre-check but skip the installer. Set true to validate a change without touching the TST database.'
+        )
+    }
+
+    options {
+        // A second manual run must never stack on top of one still in progress.
+        disableConcurrentBuilds()
+        timeout(time: 4, unit: 'HOURS')
+        buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
+    }
+
+    // Manual-only, deliberately no cron trigger - this is a test pipeline for DCX2-003-TST,
+    // run by hand (e.g. "Build Now") whenever a change needs validating, including the Teams
+    // notification, without also auto-running unattended like PGUP does.
+
+    environment {
+        DB_PORT             = '1815'
+        // dja is only granted access via hostssl rules in pg_hba.conf, so an
+        // unencrypted connection matches nothing and is rejected. Force SSL.
+        PGSSLMODE           = 'require'
+        DB_NAME             = 'ibis'
+        DB_DOMAIN           = 'SEC'
+        DB_USER             = 'dja'
+        DB_PASSWORD         = credentials('db-password')
+        PG_VERSION_EXPECTED = '17.10'
+        // DB packages and PG engine installers are both staged on the DBA team's share now,
+        // and Y: is mapped to \\10.140.6.15\public below (build_transfert is no longer used
+        // for either). INSTALLER_DIR/PG_INSTALLER_DIR point at their respective subfolders,
+        // e.g. "Y:\IBIS Database\SOFTW-01442-00 - IBIS Database 6.1.0.06.exe".
+        INSTALLER_DIR       = 'Y:\\IBIS Database'
+        // e.g. "Y:\PG Intaller\PG17\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
+        PG_INSTALLER_DIR    = 'Y:\\PG Intaller'
+    }
+
+    stages {
+        stage('Ensure installer drive mapped') {
+            steps {
+                script {
+                    def driveCheckRc = bat(script: '@net use Y: >nul 2>&1', returnStatus: true)
+                    if (driveCheckRc == 0) {
+                        echo 'Y: already mapped - reusing existing mapping'
+                    } else {
+                        echo 'Y: not mapped - mapping to \\\\10.140.6.15\\public'
+                        withCredentials([usernamePassword(credentialsId: 'build_transfer', usernameVariable: 'SMB_USER', passwordVariable: 'SMB_PASSWORD')]) {
+                            def mapRc = bat(script: '@net use Y: \\\\10.140.6.15\\public /user:%SMB_USER% %SMB_PASSWORD%', returnStatus: true)
+                            if (mapRc != 0) {
+                                error('Failed to map Y: to \\\\10.140.6.15\\public using the build_transfer credential.')
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        stage('Upgrade VMs') {
+            steps {
+                script {
+                    // Authoritative registry of every VM and its installer overrides.
+                    // TARGET_VMS selects a subset from this list; it never adds to it.
+                    def allVms = [
+                        [name: 'SVR4-004-SEC', extraArgs: []],
+                        [name: 'SVR3-009-SEC', extraArgs: []],
+                        [name: 'SVR5-004-SEC', extraArgs: []],
+                        [name: 'SVR6-004-SEC', extraArgs: []],
+                        [name: 'DCXA-004-SEC', extraArgs: []],
+                        [name: 'DCXB-004-SEC', extraArgs: []],
+                        [name: 'DCXC-004-SEC', extraArgs: []],
+                        [name: 'DCX2-003-SEC', extraArgs: []],
+                        [name: 'DCX2-004-SEC', extraArgs: ['/IbisSchema=CHM']],
+                        [name: 'DCX4-004-SEC', extraArgs: []],
+                        [name: 'DCX1-004-SEC', extraArgs: []],
+                        [name: 'DCX2-003-TST', extraArgs: []],
+                        [name: 'DCX2-007-SEC', extraArgs: []]
+                    ]
+
+                    def requested = (params.TARGET_VMS ?: '').split(',').collect { it.trim().toUpperCase() }.findAll { it }
+                    if (!requested) {
+                        error('TARGET_VMS is empty - nothing to process.')
+                    }
+                    def knownNames = allVms.collect { it.name.toUpperCase() }
+                    def unknown = requested.findAll { !knownNames.contains(it) }
+                    if (unknown) {
+                        error("Unknown VM name(s) in TARGET_VMS: ${unknown.join(', ')}. Valid names: ${allVms.collect { it.name }.join(', ')}")
+                    }
+                    def vms = allVms.findAll { requested.contains(it.name.toUpperCase()) }
+
+                    def triggerCause = 'unknown'
+                    try {
+                        triggerCause = currentBuild.getBuildCauses().collect { it.shortDescription }.join(', ')
+                    } catch (Exception ignored) { }
+                    // Mirrored to env so the top-level helper functions below (processVm,
+                    // sendInProgressNotification, ...) can read it - they're separate CPS
+                    // methods and don't see this stage's Groovy locals.
+                    env.TRIGGER_CAUSE = triggerCause
+
+                    echo "Trigger: ${triggerCause}"
+                    echo "Mode: ${params.DRY_RUN ? 'DRY_RUN - installer will be skipped' : 'LIVE upgrade'}"
+                    echo "Targeting ${vms.size()} of ${allVms.size()} VM(s): ${vms.collect { it.name }.join(', ')}"
+
+                    // Which installer to apply. An explicit param forces a specific one; leaving
+                    // both blank auto-detects whatever is newest.
+                    def wantedFile    = (params.INSTALLER_FILE ?: '').trim()
+                    def wantedVersion = (params.INSTALLER_VERSION ?: '').trim()
+                    def autoDetect    = !wantedFile && !wantedVersion
+
+                    // Resolve the staged installer on the DBA share (via the Y: mapping).
+                    // New versions land in their own subfolder, e.g. "DB 6.1.0.06\SOFTW-01442-00 -
+                    // IBIS Database 6.1.0.06.exe", so the search recurses instead of looking only
+                    // directly inside INSTALLER_DIR. Groovy file access is blocked by the pipeline
+                    // sandbox, so the lookup runs through PowerShell.
+                    def pattern = wantedFile ?: (wantedVersion ? "*${wantedVersion}*.exe" : '*.exe')
+                    def resolved = powershell(returnStdout: true, script: """
+                        \$f = Get-ChildItem -Path '${env.INSTALLER_DIR}' -Recurse -Filter '${pattern}' -File -ErrorAction SilentlyContinue |
+                              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                        if (\$f) { Write-Output \$f.FullName }
+                    """).trim()
+                    if (!resolved) {
+                        if (autoDetect) {
+                            // Routine outcome when nothing is staged, not a failure.
+                            echo "No installer found under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database) - nothing to do this run."
+                            return
+                        }
+                        error("No installer matching '${pattern}' under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database).")
+                    }
+                    env.INSTALLER_PATH = resolved
+
+                    def resolvedName = resolved.tokenize('\\').last()
+                    env.INSTALLER_BUILD = extractBuildNumber(resolvedName)
+                    if (!env.INSTALLER_BUILD) {
+                        error("Cannot read a build number from '${resolvedName}'. The file name must contain x.x.x.x.")
+                    }
+
+                    // A hotfix is named "... 6.0.0.107 HF1.4.exe" but last_pkg_update() is not
+                    // known to report the HF marker, so a hotfix can never be proven to be
+                    // already installed. It is always applied rather than skipped.
+                    env.INSTALLER_HF    = extractHotfix(resolvedName) ?: ''
+                    env.INSTALLER_LABEL = env.INSTALLER_HF ? "${env.INSTALLER_BUILD} ${env.INSTALLER_HF}" : env.INSTALLER_BUILD
+
+                    echo "Installer: ${env.INSTALLER_PATH}"
+                    echo "Installer build: ${env.INSTALLER_LABEL}"
+
+                    // The PostgreSQL engine upgrade always precedes the database upgrade, so
+                    // resolve it once up front, same as the database installer above. Absence
+                    // of a new version folder is normal - most runs have nothing to do here.
+                    def pgFolder = powershell(returnStdout: true, script: """
+                        \$d = Get-ChildItem -Path '${env.PG_INSTALLER_DIR}' -Directory -ErrorAction SilentlyContinue |
+                              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                        if (\$d) { Write-Output \$d.FullName }
+                    """).trim()
+
+                    def pgUpgradeAvailable = false
+                    if (pgFolder) {
+                        def pgExe = powershell(returnStdout: true, script: """
+                            \$f = Get-ChildItem -LiteralPath '${pgFolder}' -Filter '*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                            if (\$f) { Write-Output \$f.FullName }
+                        """).trim()
+                        // The release notes file name varies per release but always contains
+                        // "Release Notes", e.g. "SOFTW-01398-00 - PostgreSQL 17 Installer Release Notes.txt".
+                        def pgNotesPath = powershell(returnStdout: true, script: """
+                            \$f = Get-ChildItem -LiteralPath '${pgFolder}' -Filter '*Release Notes*.txt' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                            if (\$f) { Write-Output \$f.FullName }
+                        """).trim()
+
+                        if (!pgExe || !pgNotesPath) {
+                            error("Found PostgreSQL folder '${pgFolder}' but it is missing the installer .exe or a '*Release Notes*.txt' file - cannot determine the target version safely.")
+                        }
+
+                        def pgNotesText = powershell(returnStdout: true, script: "Get-Content -LiteralPath '${pgNotesPath}' -Raw").trim()
+                        def pgTargetVersion = extractPgTargetVersion(pgNotesText)
+                        if (!pgTargetVersion) {
+                            error("Could not read a target PostgreSQL version (e.g. '17.6') out of '${pgNotesPath}'.")
+                        }
+
+                        env.PG_EXE_PATH       = pgExe
+                        env.PG_TARGET_VERSION = pgTargetVersion
+                        env.PG_TARGET_MAJOR   = pgTargetVersion.tokenize('.')[0]
+                        pgUpgradeAvailable    = true
+
+                        echo "PostgreSQL installer: ${env.PG_EXE_PATH}"
+                        echo "PostgreSQL target version: ${env.PG_TARGET_VERSION} (per ${pgNotesPath})"
+
+                        // Same release notes file also states the minimum IBIS schema version
+                        // (last_update()) required before the DB package can be applied. Not
+                        // every release notes file states one, so its absence is not an error.
+                        env.MIN_SCHEMA_VERSION = extractMinSchemaVersion(pgNotesText) ?: ''
+                        if (env.MIN_SCHEMA_VERSION) {
+                            echo "Minimum required schema version: ${env.MIN_SCHEMA_VERSION} (per ${pgNotesPath})"
+                        }
+                    } else {
+                        echo "No new PostgreSQL version folder under ${env.PG_INSTALLER_DIR} - skipping PostgreSQL engine check."
+                    }
+
+                    def results = []
+
+                    // Order matters: CS (SVR*) must succeed before LIR (DCXA*/DCXB*/DCXC*), and LIR before the plain DCX group.
+                    def phases = [
+                        [label: 'CS',  vms: vms.findAll { classifyGroup(it.name) == 'CS' },  gate: true],
+                        [label: 'LIR', vms: vms.findAll { classifyGroup(it.name) == 'LIR' }, gate: true],
+                        [label: 'DCX', vms: vms.findAll { classifyGroup(it.name) == 'DCX' }, gate: false]
+                    ]
+
+                    try {
+                        for (phase in phases) {
+                            if (phase.vms.isEmpty()) {
+                                continue
+                            }
+
+                            stage("Phase: ${phase.label}") {
+                                for (vm in phase.vms) {
+                                    def group = phase.label
+                                    def detail = []
+                                    def version = 'N/A'
+                                    def status = 'Failed'
+
+                                    try {
+                                        def result = processVm(vm, group, pgUpgradeAvailable, detail)
+                                        version = result.version
+                                        status = result.status
+                                    } catch (Exception e) {
+                                        echo "VM ${vm.name} processing failed unexpectedly: ${e.getMessage()}"
+                                        detail << [label: 'Unexpected error', passed: false, value: e.getMessage()]
+                                        status = 'Failed'
+                                        currentBuild.result = 'FAILURE'
+                                    }
+
+                                    // A pre-check failure (active connections, PG version not yet upgraded, etc.)
+                                    // is expected, routine output of a DRY_RUN - it means "not ready yet", not
+                                    // "something is broken" - so it shouldn't flip the whole build to FAILURE.
+                                    // An unexpected exception still does, via the catch block above.
+                                    if (status == 'Failed' && !params.DRY_RUN) {
+                                        currentBuild.result = 'FAILURE'
+                                    }
+
+                                    results << [name: vm.name, phase: group, version: version, status: status, detail: detail]
+
+                                    // A failed PostgreSQL engine upgrade aborts the whole pipeline rather
+                                    // than just this VM - the database upgrade must never run against an
+                                    // engine left in an unknown/half-upgraded state. This is deliberately
+                                    // outside the per-VM try/catch above so it isn't swallowed as a
+                                    // per-VM failure; it still reaches the Generate Report stage via the
+                                    // outer try/finally before failing the build.
+                                    if (env.PG_UPGRADE_ABORTED == 'true') {
+                                        error("Aborting: ${env.PG_UPGRADE_ERROR}")
+                                    }
+                                }
+                            }
+
+                            // Same reasoning as above - DRY_RUN should finish checking every phase to give a
+                            // full picture, not abort partway through on a routine "not ready yet" pre-check.
+                            if (phase.gate && !params.DRY_RUN) {
+                                def phaseVmNames = phase.vms.collect { it.name }
+                                def phaseFailures = results.findAll { it.name in phaseVmNames && it.status == 'Failed' }
+                                if (phaseFailures) {
+                                    error("Stopping pipeline: ${phase.label} phase had failure(s) on: ${phaseFailures.collect { it.name }.join(', ')}")
+                                }
+                            }
+                        }
+                    } finally {
+                        stage('Generate Report') {
+                            generateReportAndNotify(results, pgUpgradeAvailable)
                         }
                     }
                 }
