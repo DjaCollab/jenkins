@@ -35,13 +35,6 @@ def compareBuildVersions(String a, String b) {
 }
 
 @NonCPS
-def extractMinSchemaVersion(String releaseNotesText) {
-    // e.g. "...the IBIS database must be at version\n- 6.0.0.218 or later build"
-    def m = (releaseNotesText =~ /(\d+\.\d+\.\d+\.\d+)\s+or later build/)
-    return m.find() ? m.group(1) : null
-}
-
-@NonCPS
 def jsonEscape(String s) {
     if (s == null) return ''
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', ' ').replace('\r', '')
@@ -51,25 +44,6 @@ def jsonEscape(String s) {
 def extractPgVersion(String text) {
     def m = (text =~ /PostgreSQL (\d+\.\d+)/)
     return m.find() ? m.group(1) : null
-}
-
-@NonCPS
-def extractPgTargetVersion(String releaseNotesText) {
-    // The description reads e.g. "...upgrade of a PostgreSQL 14.17 database to PostgreSQL
-    // 17.6" - the destination version is the one named after "to PostgreSQL", not the first
-    // PostgreSQL version mentioned in the file.
-    def toMatch = (releaseNotesText =~ /to PostgreSQL (\d+\.\d+)/)
-    if (toMatch.find()) {
-        return toMatch.group(1)
-    }
-    // Fall back to the last "PostgreSQL x.y" mention (e.g. a fresh-install release note with
-    // no "upgrade ... to" wording).
-    def all = (releaseNotesText =~ /PostgreSQL (\d+\.\d+)/)
-    def last = null
-    while (all.find()) {
-        last = all.group(1)
-    }
-    return last
 }
 
 // These helper methods (below) are declared at the top level rather than inline in the
@@ -789,6 +763,21 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                             archiveArtifacts artifacts: 'upgrade_report.html, install-*.log', allowEmptyArchive: true
                             echo "Report written to upgrade_report.html and archived as a build artifact"
 
+                            // A VM stuck on an older PostgreSQL engine than PG_VERSION_EXPECTED is
+                            // permanently blocked from getting the DB package until PG is upgraded -
+                            // that's actionable and easy to miss inside a routine "no VM upgraded"
+                            // build, so it's surfaced unconditionally, independent of (and not
+                            // suppressed by) the repeat-failure dedup below.
+                            def pgMismatches = results.findAll { r ->
+                                r.detail.any { d -> d.label?.startsWith('PostgreSQL ') && d.passed == false }
+                            }.collect { r ->
+                                def pgDetail = r.detail.find { d -> d.label?.startsWith('PostgreSQL ') }
+                                [name: r.name, actual: pgDetail?.value ?: 'unknown']
+                            }
+                            if (pgMismatches) {
+                                sendPgEngineMismatchWarning(pgMismatches)
+                            }
+
                             // Don't re-alert on a failure that's already been reported and hasn't changed -
                             // that just repeats the same "known, unresolved" ping every night. A failure is
                             // "new" if this VM hasn't failed before, or has failed before but at a different
@@ -1037,6 +1026,83 @@ def sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, toLabel) {
     }
 }
 
+// Sent whenever one or more VMs are blocked because their PostgreSQL engine doesn't match
+// PG_VERSION_EXPECTED yet - the DB package install refuses to run until PG is upgraded, so
+// this is deliberately separate from (and not suppressed by) the regular pass/fail report.
+def sendPgEngineMismatchWarning(mismatches) {
+    def vmFacts = mismatches.collect { m ->
+        """{"title": "${jsonEscape(m.name)}", "value": "${jsonEscape(m.actual)}"}"""
+    }.join(',\n')
+
+    def card = """{
+    "type": "message",
+    "attachments": [
+        {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "⚠️ PostgreSQL needs to be upgraded first",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "attention"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "These VMs are on an older PostgreSQL engine than expected (${jsonEscape(env.PG_VERSION_EXPECTED)}) - the IBIS Database package install is blocked until PostgreSQL is upgraded.",
+                        "wrap": true
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            ${vmFacts}
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.OpenUrl",
+                        "title": "View build",
+                        "url": "${env.BUILD_URL}"
+                    }
+                ]
+            }
+        }
+    ]
+}"""
+
+    writeFile file: 'teams_card_pg_mismatch.json', text: card, encoding: 'UTF-8'
+    withCredentials([string(credentialsId: 'Teams-PGUP', variable: 'TEAMS_WEBHOOK_URL')]) {
+        try {
+            powershell '''
+                try {
+                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_pg_mismatch.json' -UseBasicParsing
+                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                } catch {
+                    $statusCode = $null
+                    $body = $null
+                    if ($_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        if ($stream) {
+                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                        }
+                    }
+                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                    throw
+                }
+            '''
+            echo "Teams PostgreSQL-mismatch warning sent"
+        } catch (Exception teamsEx) {
+            echo "Failed to send Teams PostgreSQL-mismatch warning: ${teamsEx.getMessage()}"
+        }
+    }
+}
+
 // Sent once, right as the Regression Tests stage begins, naming the VMs about to be checked.
 def sendRegressionStartNotification(vmNames) {
     def vmList = vmNames.collect { jsonEscape(it) }.join(', ')
@@ -1201,35 +1267,36 @@ pipeline {
         string(
             name: 'TARGET_VMS',
             defaultValue: 'SVR3-009-SEC,DCXA-004-SEC,DCX2-004-SEC,DCX3-004-SEC,SVR5-004-SEC,SVR4-004-SEC,DCX1-004-SEC,DCXC-004-SEC',
-            description: 'Comma-separated VM names to process. The nightly scheduled build uses this default value, so keep it narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
+            description: 'Comma-separated VM names to process. The scheduled build (every 2 hours) uses this default value, so keep it narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
         )
         string(
             name: 'INSTALLER_FILE',
             defaultValue: '',
-            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank on the nightly schedule - it auto-detects the newest installer under INSTALLER_DIR.'
+            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank on the scheduled run - it auto-detects the newest installer under INSTALLER_DIR.'
         )
         string(
             name: 'INSTALLER_VERSION',
             defaultValue: '',
-            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank on the nightly schedule - it auto-detects the newest installer under INSTALLER_DIR.'
+            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank on the scheduled run - it auto-detects the newest installer under INSTALLER_DIR.'
         )
         booleanParam(
             name: 'DRY_RUN',
             defaultValue: false,
-            description: 'Run every pre-check but skip the installer. The nightly schedule runs with this false (live) by default - set true only to validate a change without touching a database.'
+            description: 'Run every pre-check but skip the installer. The scheduled run executes with this false (live) by default - set true only to validate a change without touching a database.'
         )
     }
 
     options {
-        // A manually triggered run must never stack on top of the nightly one still in progress.
+        // A manually triggered run must never stack on top of the scheduled one still in progress.
         disableConcurrentBuilds()
         timeout(time: 4, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
     }
 
     triggers {
-        // Poll the DBA share (via the Y: mapping) once a night at 1 AM for a new installer.
-        cron('0 1 * * *')
+        // Poll the DBA share (via the Y: mapping) every 2 hours for a new installer. 'H'
+        // spreads the actual minute to avoid a thundering herd of jobs all firing at :00.
+        cron('H */2 * * *')
     }
 
     environment {
@@ -1247,7 +1314,9 @@ pipeline {
         // for either). INSTALLER_DIR/PG_INSTALLER_DIR point at their respective subfolders,
         // e.g. "Y:\IBIS Database\SOFTW-01442-00 - IBIS Database 6.1.0.06.exe".
         INSTALLER_DIR       = 'Y:\\IBIS Database'
-        // e.g. "Y:\PG Intaller\PG17\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
+        // No per-version subfolder here (unlike INSTALLER_DIR) - the installer and its
+        // release notes sit directly in this folder, e.g.
+        // "Y:\PG Intaller\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
         PG_INSTALLER_DIR    = 'Y:\\PG Intaller'
     }
 
@@ -1316,7 +1385,7 @@ pipeline {
                     echo "Targeting ${vms.size()} of ${allVms.size()} VM(s): ${vms.collect { it.name }.join(', ')}"
 
                     // Which installer to apply. An explicit param forces a specific one; the
-                    // nightly schedule passes neither and auto-detects whatever is newest.
+                    // scheduled run passes neither and auto-detects whatever is newest.
                     def wantedFile    = (params.INSTALLER_FILE ?: '').trim()
                     def wantedVersion = (params.INSTALLER_VERSION ?: '').trim()
                     def autoDetect    = !wantedFile && !wantedVersion
@@ -1334,7 +1403,7 @@ pipeline {
                     """).trim()
                     if (!resolved) {
                         if (autoDetect) {
-                            // Routine outcome of the nightly check, not a failure - just nothing new yet.
+                            // Routine outcome of the scheduled check, not a failure - just nothing new yet.
                             echo "No installer found under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database) - nothing to do this run."
                             return
                         }
@@ -1358,54 +1427,29 @@ pipeline {
                     echo "Installer build: ${env.INSTALLER_LABEL}"
 
                     // The PostgreSQL engine upgrade always precedes the database upgrade, so
-                    // resolve it once up front, same as the database installer above. Absence
-                    // of a new version folder is normal - most runs have nothing to do here.
-                    def pgFolder = powershell(returnStdout: true, script: """
-                        \$d = Get-ChildItem -Path '${env.PG_INSTALLER_DIR}' -Directory -ErrorAction SilentlyContinue |
+                    // resolve it once up front, same as the database installer above. The
+                    // installer sits directly in PG_INSTALLER_DIR (no per-version subfolder,
+                    // unlike the DB package) - no release notes to parse: its mere presence
+                    // means an upgrade is needed, and the target is always PG_VERSION_EXPECTED.
+                    // Absence is normal - most runs have nothing to do here.
+                    def pgExe = powershell(returnStdout: true, script: """
+                        \$f = Get-ChildItem -Path '${env.PG_INSTALLER_DIR}' -Filter '*.exe' -File -ErrorAction SilentlyContinue |
                               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                        if (\$d) { Write-Output \$d.FullName }
+                        if (\$f) { Write-Output \$f.FullName }
                     """).trim()
 
                     def pgUpgradeAvailable = false
-                    if (pgFolder) {
-                        def pgExe = powershell(returnStdout: true, script: """
-                            \$f = Get-ChildItem -LiteralPath '${pgFolder}' -Filter '*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                            if (\$f) { Write-Output \$f.FullName }
-                        """).trim()
-                        // The release notes file name varies per release but always contains
-                        // "Release Notes", e.g. "SOFTW-01398-00 - PostgreSQL 17 Installer Release Notes.txt".
-                        def pgNotesPath = powershell(returnStdout: true, script: """
-                            \$f = Get-ChildItem -LiteralPath '${pgFolder}' -Filter '*Release Notes*.txt' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                            if (\$f) { Write-Output \$f.FullName }
-                        """).trim()
-
-                        if (!pgExe || !pgNotesPath) {
-                            error("Found PostgreSQL folder '${pgFolder}' but it is missing the installer .exe or a '*Release Notes*.txt' file - cannot determine the target version safely.")
-                        }
-
-                        def pgNotesText = powershell(returnStdout: true, script: "Get-Content -LiteralPath '${pgNotesPath}' -Raw").trim()
-                        def pgTargetVersion = extractPgTargetVersion(pgNotesText)
-                        if (!pgTargetVersion) {
-                            error("Could not read a target PostgreSQL version (e.g. '17.6') out of '${pgNotesPath}'.")
-                        }
-
-                        env.PG_EXE_PATH       = pgExe
-                        env.PG_TARGET_VERSION = pgTargetVersion
-                        env.PG_TARGET_MAJOR   = pgTargetVersion.tokenize('.')[0]
-                        pgUpgradeAvailable    = true
+                    if (pgExe) {
+                        env.PG_EXE_PATH        = pgExe
+                        env.PG_TARGET_VERSION  = env.PG_VERSION_EXPECTED
+                        env.PG_TARGET_MAJOR    = env.PG_VERSION_EXPECTED.tokenize('.')[0]
+                        env.MIN_SCHEMA_VERSION = ''
+                        pgUpgradeAvailable     = true
 
                         echo "PostgreSQL installer: ${env.PG_EXE_PATH}"
-                        echo "PostgreSQL target version: ${env.PG_TARGET_VERSION} (per ${pgNotesPath})"
-
-                        // Same release notes file also states the minimum IBIS schema version
-                        // (last_update()) required before the DB package can be applied. Not
-                        // every release notes file states one, so its absence is not an error.
-                        env.MIN_SCHEMA_VERSION = extractMinSchemaVersion(pgNotesText) ?: ''
-                        if (env.MIN_SCHEMA_VERSION) {
-                            echo "Minimum required schema version: ${env.MIN_SCHEMA_VERSION} (per ${pgNotesPath})"
-                        }
+                        echo "PostgreSQL target version: ${env.PG_TARGET_VERSION}"
                     } else {
-                        echo "No new PostgreSQL version folder under ${env.PG_INSTALLER_DIR} - skipping PostgreSQL engine check."
+                        echo "No PostgreSQL installer found under ${env.PG_INSTALLER_DIR} - skipping PostgreSQL engine check."
                     }
 
                     def results = []

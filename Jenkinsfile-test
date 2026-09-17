@@ -35,13 +35,6 @@ def compareBuildVersions(String a, String b) {
 }
 
 @NonCPS
-def extractMinSchemaVersion(String releaseNotesText) {
-    // e.g. "...the IBIS database must be at version\n- 6.0.0.218 or later build"
-    def m = (releaseNotesText =~ /(\d+\.\d+\.\d+\.\d+)\s+or later build/)
-    return m.find() ? m.group(1) : null
-}
-
-@NonCPS
 def jsonEscape(String s) {
     if (s == null) return ''
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', ' ').replace('\r', '')
@@ -51,25 +44,6 @@ def jsonEscape(String s) {
 def extractPgVersion(String text) {
     def m = (text =~ /PostgreSQL (\d+\.\d+)/)
     return m.find() ? m.group(1) : null
-}
-
-@NonCPS
-def extractPgTargetVersion(String releaseNotesText) {
-    // The description reads e.g. "...upgrade of a PostgreSQL 14.17 database to PostgreSQL
-    // 17.6" - the destination version is the one named after "to PostgreSQL", not the first
-    // PostgreSQL version mentioned in the file.
-    def toMatch = (releaseNotesText =~ /to PostgreSQL (\d+\.\d+)/)
-    if (toMatch.find()) {
-        return toMatch.group(1)
-    }
-    // Fall back to the last "PostgreSQL x.y" mention (e.g. a fresh-install release note with
-    // no "upgrade ... to" wording).
-    def all = (releaseNotesText =~ /PostgreSQL (\d+\.\d+)/)
-    def last = null
-    while (all.find()) {
-        last = all.group(1)
-    }
-    return last
 }
 
 // These helper methods (below) are declared at the top level rather than inline in the
@@ -198,9 +172,6 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                 } else if (params.DRY_RUN) {
                                                     echo "DRY_RUN: PostgreSQL engine on ${vm.name} is ${pgEngineVersion}, target is ${env.PG_TARGET_VERSION} - upgrade skipped"
                                                     detail << [label: 'PostgreSQL engine', passed: null, value: "Skipped - DRY_RUN (${pgEngineVersion} -> ${env.PG_TARGET_VERSION} needed)"]
-                                                    // Unlike jenkinsfile, this test pipeline sends the in-progress card even on a
-                                                    // DRY_RUN, since validating the Teams notification is the point of this job.
-                                                    sendInProgressNotification(vm.name, pgUpgradeAvailable)
                                                 } else {
                                                     def currentMajor = pgEngineVersion.tokenize('.')[0]
                                                     // 14 -> 17 is a major upgrade; 17.x -> 17.y within the same major is a minor one.
@@ -468,9 +439,6 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                 } else if (params.DRY_RUN && env.CHECKCON_PASSED == 'true' && env.PG_VERSION_MATCHED == 'true' && env.VM_TYPE_VALID == 'true' && env.SITE_TYPE_VALID == 'true' && env.SCHEMA_VERSION_VALID == 'true') {
                                                     echo "DRY_RUN: all pre-checks passed on ${vm.name}, skipping installer"
                                                     detail << [label: 'Install', passed: null, value: 'Skipped - DRY_RUN (pre-checks passed)']
-                                                    // Unlike jenkinsfile, this test pipeline sends the in-progress card even on a
-                                                    // DRY_RUN, since validating the Teams notification is the point of this job.
-                                                    sendInProgressNotification(vm.name, pgUpgradeAvailable)
                                                     status = 'Skipped'
                                                 } else if (env.CHECKCON_PASSED == 'true' && env.PG_VERSION_MATCHED == 'true' && env.VM_TYPE_VALID == 'true' && env.SITE_TYPE_VALID == 'true' && env.SCHEMA_VERSION_VALID == 'true') {
                                                     sendInProgressNotification(vm.name, pgUpgradeAvailable)
@@ -795,24 +763,71 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                             archiveArtifacts artifacts: 'upgrade_report.html, install-*.log', allowEmptyArchive: true
                             echo "Report written to upgrade_report.html and archived as a build artifact"
 
-                            // Unlike jenkinsfile, this test pipeline never skips or suppresses the
-                            // notification - no repeat-failure dedup, no "nothing changed" check. It
-                            // exists specifically to validate the Teams card, so every run should
-                            // show one.
-                            def overallResult = currentBuild.currentResult ?: 'SUCCESS'
-                            def resultColor = (overallResult == 'SUCCESS') ? 'good' : (overallResult == 'FAILURE') ? 'attention' : 'warning'
-                            def resultIcon = (overallResult == 'SUCCESS') ? '✅' : (overallResult == 'FAILURE') ? '❌' : '⚠️'
+                            // A VM stuck on an older PostgreSQL engine than PG_VERSION_EXPECTED is
+                            // permanently blocked from getting the DB package until PG is upgraded -
+                            // that's actionable and easy to miss inside a routine "no VM upgraded"
+                            // build, so it's surfaced unconditionally, independent of (and not
+                            // suppressed by) the repeat-failure dedup below.
+                            def pgMismatches = results.findAll { r ->
+                                r.detail.any { d -> d.label?.startsWith('PostgreSQL ') && d.passed == false }
+                            }.collect { r ->
+                                def pgDetail = r.detail.find { d -> d.label?.startsWith('PostgreSQL ') }
+                                [name: r.name, actual: pgDetail?.value ?: 'unknown']
+                            }
+                            if (pgMismatches) {
+                                sendPgEngineMismatchWarning(pgMismatches)
+                            }
 
-                            def vmFacts = results.collect { r ->
-                                def pgDetail = r.detail.find { it.label == 'PostgreSQL engine' }
-                                def pgValue = pgDetail?.value?.toString()
-                                def pgText = (pgValue && !pgValue.startsWith('N/A')) ? " (PG: ${pgValue})" : ''
-                                """{"title": "${jsonEscape(r.name)} (${jsonEscape(r.phase)})", "value": "${jsonEscape(r.status)} - build ${jsonEscape(r.version ?: 'N/A')}${jsonEscape(pgText)}"}"""
-                            }.join(',\n')
+                            // Don't re-alert on a failure that's already been reported and hasn't changed -
+                            // that just repeats the same "known, unresolved" ping every night. A failure is
+                            // "new" if this VM hasn't failed before, or has failed before but at a different
+                            // target version (DB build and/or PG version) than what's recorded here. State
+                            // persists in the workspace across builds since this job doesn't wipe it.
+                            def notifyStateFile = 'teams_notified_failures.txt'
+                            def notifiedFailures = [:]
+                            if (fileExists(notifyStateFile)) {
+                                readFile(notifyStateFile).trim().readLines().each { line ->
+                                    def parts = line.split('=', 2)
+                                    if (parts.length == 2) {
+                                        notifiedFailures[parts[0]] = parts[1]
+                                    }
+                                }
+                            }
 
-                            def pgTargetFact = pgUpgradeAvailable ? ",\n{\"title\": \"PG target version\", \"value\": \"${jsonEscape(env.PG_TARGET_VERSION)}\"}" : ''
+                            def attemptSignature = "${env.INSTALLER_LABEL}|${env.PG_TARGET_VERSION ?: ''}"
+                            def newFailureVms = []
+                            results.each { r ->
+                                if (r.status == 'Failed') {
+                                    if (notifiedFailures[r.name] == attemptSignature) {
+                                        echo "Suppressing repeat Teams notification for ${r.name} - already notified for this version"
+                                    } else {
+                                        newFailureVms << r.name
+                                        notifiedFailures[r.name] = attemptSignature
+                                    }
+                                } else if (r.status == 'Success') {
+                                    // Resolved - a future failure at any version should notify fresh again.
+                                    notifiedFailures.remove(r.name)
+                                }
+                            }
+                            writeFile file: notifyStateFile, text: notifiedFailures.collect { k, v -> "${k}=${v}" }.join('\n')
 
-                            def teamsCard = """{
+                            // Nothing to tell anyone if every VM was already up to date, or if the only
+                            // failures present are ones already notified and still unresolved.
+                            if (successCount > 0 || newFailureVms.size() > 0) {
+                                def overallResult = currentBuild.currentResult ?: 'SUCCESS'
+                                def resultColor = (overallResult == 'SUCCESS') ? 'good' : (overallResult == 'FAILURE') ? 'attention' : 'warning'
+                                def resultIcon = (overallResult == 'SUCCESS') ? '✅' : (overallResult == 'FAILURE') ? '❌' : '⚠️'
+
+                                def vmFacts = results.collect { r ->
+                                    def pgDetail = r.detail.find { it.label == 'PostgreSQL engine' }
+                                    def pgValue = pgDetail?.value?.toString()
+                                    def pgText = (pgValue && !pgValue.startsWith('N/A')) ? " (PG: ${pgValue})" : ''
+                                    """{"title": "${jsonEscape(r.name)} (${jsonEscape(r.phase)})", "value": "${jsonEscape(r.status)} - build ${jsonEscape(r.version ?: 'N/A')}${jsonEscape(pgText)}"}"""
+                                }.join(',\n')
+
+                                def pgTargetFact = pgUpgradeAvailable ? ",\n{\"title\": \"PG target version\", \"value\": \"${jsonEscape(env.PG_TARGET_VERSION)}\"}" : ''
+
+                                def teamsCard = """{
     "type": "message",
     "attachments": [
         {
@@ -856,34 +871,37 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
     ]
 }"""
 
-                            // Explicit UTF-8 - the card text has emoji and a bullet character, and
-                            // writeFile's default platform charset on Windows can mangle those into
-                            // invalid JSON, which Power Automate then rejects with a 400.
-                            writeFile file: 'teams_card.json', text: teamsCard, encoding: 'UTF-8'
-                            withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
-                                try {
-                                    powershell '''
-                                        try {
-                                            $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card.json' -UseBasicParsing
-                                            Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
-                                        } catch {
-                                            $statusCode = $null
-                                            $body = $null
-                                            if ($_.Exception.Response) {
-                                                $statusCode = [int]$_.Exception.Response.StatusCode
-                                                $stream = $_.Exception.Response.GetResponseStream()
-                                                if ($stream) {
-                                                    $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                                // Explicit UTF-8 - the card text has emoji and a bullet character, and
+                                // writeFile's default platform charset on Windows can mangle those into
+                                // invalid JSON, which Power Automate then rejects with a 400.
+                                writeFile file: 'teams_card.json', text: teamsCard, encoding: 'UTF-8'
+                                withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
+                                    try {
+                                        powershell '''
+                                            try {
+                                                $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card.json' -UseBasicParsing
+                                                Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                                            } catch {
+                                                $statusCode = $null
+                                                $body = $null
+                                                if ($_.Exception.Response) {
+                                                    $statusCode = [int]$_.Exception.Response.StatusCode
+                                                    $stream = $_.Exception.Response.GetResponseStream()
+                                                    if ($stream) {
+                                                        $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                                                    }
                                                 }
+                                                Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                                                throw
                                             }
-                                            Write-Output "Teams webhook error: HTTP $statusCode - $body"
-                                            throw
-                                        }
-                                    '''
-                                    echo "Teams notification sent"
-                                } catch (Exception teamsEx) {
-                                    echo "Failed to send Teams notification: ${teamsEx.getMessage()}"
+                                        '''
+                                        echo "Teams notification sent"
+                                    } catch (Exception teamsEx) {
+                                        echo "Failed to send Teams notification: ${teamsEx.getMessage()}"
+                                    }
                                 }
+                            } else {
+                                echo "Skipping Teams notification - no VM was upgraded, and any failure(s) present were already notified for this version"
                             }
 }
 
@@ -949,7 +967,7 @@ def sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, toLabel) {
                 "body": [
                     {
                         "type": "TextBlock",
-                        "text": "⚠️ Upgrade from ${jsonEscape(fromLabel)} to ${jsonEscape(toLabel)} of the following VMs will start in 10 minutes",
+                        "text": "⚠️ Upgrade from ${jsonEscape(fromLabel)} to ${jsonEscape(toLabel)} of the following VMs will start in 30 minutes",
                         "size": "Large",
                         "weight": "Bolder",
                         "color": "warning",
@@ -1004,6 +1022,83 @@ def sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, toLabel) {
             echo "Teams pre-upgrade warning sent"
         } catch (Exception teamsEx) {
             echo "Failed to send Teams pre-upgrade warning: ${teamsEx.getMessage()}"
+        }
+    }
+}
+
+// Sent whenever one or more VMs are blocked because their PostgreSQL engine doesn't match
+// PG_VERSION_EXPECTED yet - the DB package install refuses to run until PG is upgraded, so
+// this is deliberately separate from (and not suppressed by) the regular pass/fail report.
+def sendPgEngineMismatchWarning(mismatches) {
+    def vmFacts = mismatches.collect { m ->
+        """{"title": "${jsonEscape(m.name)}", "value": "${jsonEscape(m.actual)}"}"""
+    }.join(',\n')
+
+    def card = """{
+    "type": "message",
+    "attachments": [
+        {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "⚠️ PostgreSQL needs to be upgraded first",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "attention"
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "These VMs are on an older PostgreSQL engine than expected (${jsonEscape(env.PG_VERSION_EXPECTED)}) - the IBIS Database package install is blocked until PostgreSQL is upgraded.",
+                        "wrap": true
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            ${vmFacts}
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.OpenUrl",
+                        "title": "View build",
+                        "url": "${env.BUILD_URL}"
+                    }
+                ]
+            }
+        }
+    ]
+}"""
+
+    writeFile file: 'teams_card_pg_mismatch.json', text: card, encoding: 'UTF-8'
+    withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
+        try {
+            powershell '''
+                try {
+                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_pg_mismatch.json' -UseBasicParsing
+                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                } catch {
+                    $statusCode = $null
+                    $body = $null
+                    if ($_.Exception.Response) {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                        $stream = $_.Exception.Response.GetResponseStream()
+                        if ($stream) {
+                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                        }
+                    }
+                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                    throw
+                }
+            '''
+            echo "Teams PostgreSQL-mismatch warning sent"
+        } catch (Exception teamsEx) {
+            echo "Failed to send Teams PostgreSQL-mismatch warning: ${teamsEx.getMessage()}"
         }
     }
 }
@@ -1171,36 +1266,38 @@ pipeline {
     parameters {
         string(
             name: 'TARGET_VMS',
-            defaultValue: 'DCX2-007-SEC',
-            description: 'Comma-separated VM names to process. This is a manual test pipeline (no schedule) for validating changes - including the Teams card - before they touch PGUP. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST, DCX2-007-SEC'
+            defaultValue: 'SVR3-009-SEC,DCXA-004-SEC,DCX2-004-SEC,DCX3-004-SEC,SVR5-004-SEC,SVR4-004-SEC,DCX1-004-SEC,DCXC-004-SEC',
+            description: 'Comma-separated VM names to process. The scheduled build (every 2 hours) uses this default value, so keep it narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
         )
         string(
             name: 'INSTALLER_FILE',
             defaultValue: '',
-            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
+            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank on the scheduled run - it auto-detects the newest installer under INSTALLER_DIR.'
         )
         string(
             name: 'INSTALLER_VERSION',
             defaultValue: '',
-            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
+            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank on the scheduled run - it auto-detects the newest installer under INSTALLER_DIR.'
         )
         booleanParam(
             name: 'DRY_RUN',
             defaultValue: false,
-            description: 'Run every pre-check but skip the installer. Set true to validate a change without touching the TST database.'
+            description: 'Run every pre-check but skip the installer. The scheduled run executes with this false (live) by default - set true only to validate a change without touching a database.'
         )
     }
 
     options {
-        // A second manual run must never stack on top of one still in progress.
+        // A manually triggered run must never stack on top of the scheduled one still in progress.
         disableConcurrentBuilds()
         timeout(time: 4, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
     }
 
-    // Manual-only, deliberately no cron trigger - this is a test pipeline for DCX2-007-SEC,
-    // run by hand (e.g. "Build Now") whenever a change needs validating, including the Teams
-    // notification, without also auto-running unattended like PGUP does.
+    triggers {
+        // Poll the DBA share (via the Y: mapping) every 2 hours for a new installer. 'H'
+        // spreads the actual minute to avoid a thundering herd of jobs all firing at :00.
+        cron('H */2 * * *')
+    }
 
     environment {
         DB_PORT             = '1815'
@@ -1217,7 +1314,9 @@ pipeline {
         // for either). INSTALLER_DIR/PG_INSTALLER_DIR point at their respective subfolders,
         // e.g. "Y:\IBIS Database\SOFTW-01442-00 - IBIS Database 6.1.0.06.exe".
         INSTALLER_DIR       = 'Y:\\IBIS Database'
-        // e.g. "Y:\PG Intaller\PG17\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
+        // No per-version subfolder here (unlike INSTALLER_DIR) - the installer and its
+        // release notes sit directly in this folder, e.g.
+        // "Y:\PG Intaller\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
         PG_INSTALLER_DIR    = 'Y:\\PG Intaller'
     }
 
@@ -1258,8 +1357,7 @@ pipeline {
                         [name: 'DCX4-004-SEC', extraArgs: []],
                         [name: 'DCX1-004-SEC', extraArgs: []],
                         [name: 'DCX3-004-SEC', extraArgs: []],
-                        [name: 'DCX2-003-TST', extraArgs: []],
-                        [name: 'DCX2-007-SEC', extraArgs: []]
+                        [name: 'DCX2-003-TST', extraArgs: []]
                     ]
 
                     def requested = (params.TARGET_VMS ?: '').split(',').collect { it.trim().toUpperCase() }.findAll { it }
@@ -1286,8 +1384,8 @@ pipeline {
                     echo "Mode: ${params.DRY_RUN ? 'DRY_RUN - installer will be skipped' : 'LIVE upgrade'}"
                     echo "Targeting ${vms.size()} of ${allVms.size()} VM(s): ${vms.collect { it.name }.join(', ')}"
 
-                    // Which installer to apply. An explicit param forces a specific one; leaving
-                    // both blank auto-detects whatever is newest.
+                    // Which installer to apply. An explicit param forces a specific one; the
+                    // scheduled run passes neither and auto-detects whatever is newest.
                     def wantedFile    = (params.INSTALLER_FILE ?: '').trim()
                     def wantedVersion = (params.INSTALLER_VERSION ?: '').trim()
                     def autoDetect    = !wantedFile && !wantedVersion
@@ -1305,7 +1403,7 @@ pipeline {
                     """).trim()
                     if (!resolved) {
                         if (autoDetect) {
-                            // Routine outcome when nothing is staged, not a failure.
+                            // Routine outcome of the scheduled check, not a failure - just nothing new yet.
                             echo "No installer found under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database) - nothing to do this run."
                             return
                         }
@@ -1329,78 +1427,60 @@ pipeline {
                     echo "Installer build: ${env.INSTALLER_LABEL}"
 
                     // The PostgreSQL engine upgrade always precedes the database upgrade, so
-                    // resolve it once up front, same as the database installer above. Absence
-                    // of a new version folder is normal - most runs have nothing to do here.
-                    def pgFolder = powershell(returnStdout: true, script: """
-                        \$d = Get-ChildItem -Path '${env.PG_INSTALLER_DIR}' -Directory -ErrorAction SilentlyContinue |
+                    // resolve it once up front, same as the database installer above. The
+                    // installer sits directly in PG_INSTALLER_DIR (no per-version subfolder,
+                    // unlike the DB package) - no release notes to parse: its mere presence
+                    // means an upgrade is needed, and the target is always PG_VERSION_EXPECTED.
+                    // Absence is normal - most runs have nothing to do here.
+                    def pgExe = powershell(returnStdout: true, script: """
+                        \$f = Get-ChildItem -Path '${env.PG_INSTALLER_DIR}' -Filter '*.exe' -File -ErrorAction SilentlyContinue |
                               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                        if (\$d) { Write-Output \$d.FullName }
+                        if (\$f) { Write-Output \$f.FullName }
                     """).trim()
 
                     def pgUpgradeAvailable = false
-                    if (pgFolder) {
-                        def pgExe = powershell(returnStdout: true, script: """
-                            \$f = Get-ChildItem -LiteralPath '${pgFolder}' -Filter '*.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                            if (\$f) { Write-Output \$f.FullName }
-                        """).trim()
-                        // The release notes file name varies per release but always contains
-                        // "Release Notes", e.g. "SOFTW-01398-00 - PostgreSQL 17 Installer Release Notes.txt".
-                        def pgNotesPath = powershell(returnStdout: true, script: """
-                            \$f = Get-ChildItem -LiteralPath '${pgFolder}' -Filter '*Release Notes*.txt' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                            if (\$f) { Write-Output \$f.FullName }
-                        """).trim()
-
-                        if (!pgExe || !pgNotesPath) {
-                            error("Found PostgreSQL folder '${pgFolder}' but it is missing the installer .exe or a '*Release Notes*.txt' file - cannot determine the target version safely.")
-                        }
-
-                        def pgNotesText = powershell(returnStdout: true, script: "Get-Content -LiteralPath '${pgNotesPath}' -Raw").trim()
-                        def pgTargetVersion = extractPgTargetVersion(pgNotesText)
-                        if (!pgTargetVersion) {
-                            error("Could not read a target PostgreSQL version (e.g. '17.6') out of '${pgNotesPath}'.")
-                        }
-
-                        env.PG_EXE_PATH       = pgExe
-                        env.PG_TARGET_VERSION = pgTargetVersion
-                        env.PG_TARGET_MAJOR   = pgTargetVersion.tokenize('.')[0]
-                        pgUpgradeAvailable    = true
+                    if (pgExe) {
+                        env.PG_EXE_PATH        = pgExe
+                        env.PG_TARGET_VERSION  = env.PG_VERSION_EXPECTED
+                        env.PG_TARGET_MAJOR    = env.PG_VERSION_EXPECTED.tokenize('.')[0]
+                        env.MIN_SCHEMA_VERSION = ''
+                        pgUpgradeAvailable     = true
 
                         echo "PostgreSQL installer: ${env.PG_EXE_PATH}"
-                        echo "PostgreSQL target version: ${env.PG_TARGET_VERSION} (per ${pgNotesPath})"
-
-                        // Same release notes file also states the minimum IBIS schema version
-                        // (last_update()) required before the DB package can be applied. Not
-                        // every release notes file states one, so its absence is not an error.
-                        env.MIN_SCHEMA_VERSION = extractMinSchemaVersion(pgNotesText) ?: ''
-                        if (env.MIN_SCHEMA_VERSION) {
-                            echo "Minimum required schema version: ${env.MIN_SCHEMA_VERSION} (per ${pgNotesPath})"
-                        }
+                        echo "PostgreSQL target version: ${env.PG_TARGET_VERSION}"
                     } else {
-                        echo "No new PostgreSQL version folder under ${env.PG_INSTALLER_DIR} - skipping PostgreSQL engine check."
+                        echo "No PostgreSQL installer found under ${env.PG_INSTALLER_DIR} - skipping PostgreSQL engine check."
                     }
 
                     def results = []
 
                     stage('Pre-upgrade check') {
-                        // Lightweight check only - which target VMs are actually behind the staged
-                        // build. Skips the warning and wait entirely when nothing is actually behind.
-                        def vmsNeedingUpgrade = []
-                        def fromBuilds = []
-                        for (vm in vms) {
-                            def check = checkNeedsUpgrade(vm.name)
-                            if (check.reachable && check.needsUpgrade) {
-                                vmsNeedingUpgrade << vm.name
-                                fromBuilds << check.currentBuild
-                            }
-                        }
-
-                        if (vmsNeedingUpgrade) {
-                            def fromLabel = fromBuilds.unique().sort().join('/')
-                            sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, env.INSTALLER_LABEL)
-                            echo "Upgrade needed on: ${vmsNeedingUpgrade.join(', ')} - waiting 10 minutes before starting"
-                            sleep(time: 10, unit: 'MINUTES')
+                        // A DRY_RUN never actually installs anything, so a "will start in N
+                        // minutes" warning followed by a real wait would be misleading and just
+                        // waste time on a validation-only run - skip the whole check.
+                        if (params.DRY_RUN) {
+                            echo 'DRY_RUN: skipping the pre-upgrade warning and wait.'
                         } else {
-                            echo 'No target VM is behind the staged build - skipping the pre-upgrade warning and wait.'
+                            // Lightweight check only - which target VMs are actually behind the
+                            // staged build. Skips the warning and wait entirely when nothing is behind.
+                            def vmsNeedingUpgrade = []
+                            def fromBuilds = []
+                            for (vm in vms) {
+                                def check = checkNeedsUpgrade(vm.name)
+                                if (check.reachable && check.needsUpgrade) {
+                                    vmsNeedingUpgrade << vm.name
+                                    fromBuilds << check.currentBuild
+                                }
+                            }
+
+                            if (vmsNeedingUpgrade) {
+                                def fromLabel = fromBuilds.unique().sort().join('/')
+                                sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, env.INSTALLER_LABEL)
+                                echo "Upgrade needed on: ${vmsNeedingUpgrade.join(', ')} - waiting 30 minutes before starting"
+                                sleep(time: 30, unit: 'MINUTES')
+                            } else {
+                                echo 'No target VM is behind the staged build - skipping the pre-upgrade warning and wait.'
+                            }
                         }
                     }
 
