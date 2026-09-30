@@ -457,12 +457,22 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                                                 "/silent"
                                                                             )
                                                                             $installStart = Get-Date
-                                                                            $p = Start-Process -FilePath $path -ArgumentList $installArgs -PassThru
-                                                                            # WinRM runs this in session 0 with no desktop. The installer has been seen to
-                                                                            # finish the upgrade (engine at target, PostgreSQL running) and then sit on an
-                                                                            # invisible final prompt without ever exiting. Poll every 30 s: once the engine
-                                                                            # is at the target and the install log has been idle for 5 min, treat it as done
-                                                                            # and kill it (8004). Still a hard 30 min cap (8002) for a genuinely stuck install.
+                                                                            # Launch it the way it is run by hand - from its own folder, by relative
+                                                                            # name - so the installer's working directory is the folder it lives in.
+                                                                            # Start-Process rather than & so we keep a handle for the watchdog below.
+                                                                            $installDir = Split-Path -Parent $path
+                                                                            Push-Location $installDir
+                                                                            try {
+                                                                                $p = Start-Process -FilePath (Join-Path '.' (Split-Path -Leaf $path)) -ArgumentList $installArgs -WorkingDirectory $installDir -PassThru
+                                                                            } finally {
+                                                                                Pop-Location
+                                                                            }
+                                                                            # After a good upgrade the installer asks the user to agree to restart the VM.
+                                                                            # WinRM runs this in session 0 with no desktop, so that prompt is invisible and
+                                                                            # the installer never exits. The restart is not wanted - ignore the prompt: poll
+                                                                            # every 30 s, and once the engine is at the target and the install log has been
+                                                                            # idle for 5 min, kill the installer without rebooting (8004). Still a hard 30 min
+                                                                            # cap (8002) for a genuinely stuck install.
                                                                             $logDir = 'C:\\Program Files\\PostgreSQL\\instlog'
                                                                             $deadline = (Get-Date).AddMinutes(30)
                                                                             while (-not $p.WaitForExit(30 * 1000)) {
@@ -483,7 +493,7 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                                                 $idleText = if ($null -ne $idleMin) { "$idleMin min ($($lastLog.Name))" } else { 'n/a - no log written by this install yet' }
                                                                                 Write-Host "Installer running - engine: $verText, install log idle: $idleText"
                                                                                 if ($ver -eq $targetVersion -and $null -ne $idleMin -and $idleMin -ge 5) {
-                                                                                    Write-Host "Engine is at $targetVersion and the installer has been idle $idleMin min - assuming it is hung on a final prompt, killing it"
+                                                                                    Write-Host "Engine is at $targetVersion and the installer has been idle $idleMin min - assuming it is waiting on the restart prompt - ignoring it (no reboot), killing the installer"
                                                                                     Stop-InstallerTree $p
                                                                                     return 8004
                                                                                 }
@@ -528,12 +538,12 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                         def pgExitCode = fileExists(pgExitFile) ? readFile(pgExitFile).trim() : 'unknown'
 
                                                         // Inno Setup: 0 = done, 3010 = done but the machine wants a reboot. 8002, 8003 and 8004
-                                                        // are ours, set above. 8002 (killed at 30 min) and 8004 (killed once hung after finishing)
+                                                        // are ours, set above. 8002 (killed at 30 min) and 8004 (killed at the restart prompt after finishing)
                                                         // still get the database check - the installer is known to hang AFTER a good upgrade.
                                                         def pgExitNote = [
                                                             '3010': ' (reboot pending)',
                                                             '8002': ' (installer hung, killed after 30 min)',
-                                                            '8004': ' (installer hung after finishing, killed)'
+                                                            '8004': ' (restart prompt ignored, no reboot)'
                                                         ][pgExitCode] ?: ''
                                                         if (pgExitCode in ['0', '3010', '8002', '8004']) {
                                                             // Trust the database, not the exit code.
@@ -1387,6 +1397,125 @@ def sendRegressionResultNotification(regressionResults) {
     postTeamsCard('teams_card_regression_result.json', 'regression-result notification')
 }
 
+// Automation handshake (HANDSHAKE_FILE) - shared with the Trax install script and the
+// regression-test script. This pipeline owns only postgres_db.status ("idle"/"running")
+// and only reads trax.status and regression_tests.status.
+// Returns [trax: ..., regression: ...], or null if the file could not be read right now
+// (e.g. another script is mid-write) - the caller just tries again on the next poll.
+def readHandshake() {
+    def out = powershell(returnStdout: true, script: '''
+        try {
+            $h = Get-Content -LiteralPath $env:HANDSHAKE_FILE -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            Write-Output "OK|$($h.trax.status)|$($h.regression_tests.status)"
+        } catch {
+            Write-Output "ERR|$($_.Exception.Message)"
+        }
+    ''').trim()
+    def parts = out.split('\\|', -1)
+    if (parts[0] != 'OK') {
+        echo "Handshake: could not read ${env.HANDSHAKE_FILE}: ${parts.size() > 1 ? parts[1] : out}"
+        return null
+    }
+    return [trax: parts[1].trim(), regression: parts[2].trim()]
+}
+
+// Rewrites only postgres_db.status, keeping everything else in the file as-is. Written
+// to a temp file and moved into place so a reader never sees a half-written file.
+def setPostgresDbStatus(String status) {
+    withEnv(["HANDSHAKE_PG_STATUS=${status}"]) {
+        def out = powershell(returnStdout: true, script: '''
+            $path = $env:HANDSHAKE_FILE
+            $lastError = ''
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+                try {
+                    $h = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                    if ($h.postgres_db) {
+                        $h.postgres_db.status = $env:HANDSHAKE_PG_STATUS
+                    } else {
+                        $h | Add-Member -NotePropertyName postgres_db -NotePropertyValue ([pscustomobject]@{ status = $env:HANDSHAKE_PG_STATUS })
+                    }
+                    $tmp = "$path.tmp"
+                    [System.IO.File]::WriteAllText($tmp, ($h | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding $false))
+                    Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+                    Write-Output 'OK'
+                    return
+                } catch {
+                    $lastError = $_.Exception.Message
+                    Start-Sleep -Seconds 2
+                }
+            }
+            Write-Output "ERR|$lastError"
+        ''').trim()
+        if (out != 'OK') {
+            error("Handshake: could not set postgres_db.status=${status} in ${env.HANDSHAKE_FILE}: ${out}")
+        }
+        echo "Handshake: postgres_db.status = ${status}"
+    }
+}
+
+// True when Trax is idle/completed and regression tests are idle/completed/failed.
+// An unreadable file counts as not clear.
+def handshakeClear() {
+    def h = readHandshake()
+    if (h == null) {
+        return false
+    }
+    def traxClear       = h.trax in ['idle', 'completed']
+    def regressionClear = h.regression in ['idle', 'completed', 'failed']
+    echo "Handshake: trax.status=${h.trax ?: '(none)'}${traxClear ? '' : ' (busy)'}, regression_tests.status=${h.regression ?: '(none)'}${regressionClear ? '' : ' (busy)'}"
+    return traxClear && regressionClear
+}
+
+// Claims the database: waits until the other two are clear, sets postgres_db.status to
+// "running", then checks again. The file has no lock, so Trax or the regression script
+// can pass its own check in the seconds between our read and our write - the second
+// check catches that, and we back off (back to "idle") rather than run alongside it.
+// The pause before it gives a script that checked at the same moment time to write.
+// Re-checks every HANDSHAKE_POLL_MIN minutes for up to HANDSHAKE_MAX_WAIT_MIN.
+// Returns true once claimed, false if it never cleared in time.
+def acquireHandshake() {
+    def pollMin    = env.HANDSHAKE_POLL_MIN as int
+    def maxWaitMin = env.HANDSHAKE_MAX_WAIT_MIN as int
+    def waitedMin  = 0
+    while (true) {
+        if (handshakeClear()) {
+            setPostgresDbStatus('running')
+            env.HANDSHAKE_CLAIMED = 'true'
+            sleep(time: 15, unit: 'SECONDS')
+            if (handshakeClear()) {
+                return true
+            }
+            echo 'Handshake: another script started at the same moment - backing off'
+            setPostgresDbStatus('idle')
+            env.HANDSHAKE_CLAIMED = 'false'
+        }
+        if (waitedMin >= maxWaitMin) {
+            return false
+        }
+        echo "Handshake: waiting ${pollMin} min before checking again (${waitedMin}/${maxWaitMin} min waited)"
+        sleep(time: pollMin, unit: 'MINUTES')
+        waitedMin += pollMin
+    }
+}
+
+// While we hold "running", waits for the other two to be clear again. Used right
+// before the first install, in case one of them started during the 30-minute warning
+// anyway. Same polling and limit as acquireHandshake().
+def waitForHandshakeClear() {
+    def pollMin    = env.HANDSHAKE_POLL_MIN as int
+    def maxWaitMin = env.HANDSHAKE_MAX_WAIT_MIN as int
+    def waitedMin  = 0
+    while (!handshakeClear()) {
+        if (waitedMin >= maxWaitMin) {
+            return false
+        }
+        echo "Handshake: waiting ${pollMin} min before checking again (${waitedMin}/${maxWaitMin} min waited)"
+        sleep(time: pollMin, unit: 'MINUTES')
+        waitedMin += pollMin
+    }
+    return true
+}
+
 pipeline {
     agent { label 'built-in' }
 
@@ -1442,6 +1571,12 @@ pipeline {
         // release notes sit directly in this folder, e.g.
         // "Y:\PG Intaller\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
         PG_INSTALLER_DIR    = 'Y:\\PG Intaller'
+        // Shared state file with the Trax install and regression-test scripts, on this
+        // Jenkins host. postgres_db.status is set to "running" for the whole upgrade and
+        // back to "idle" when the build ends; see waitForHandshakeClear().
+        HANDSHAKE_FILE         = 'C:\\Users\\Public\\Automation_Handshake\\Handshakes.json'
+        HANDSHAKE_POLL_MIN     = '10'
+        HANDSHAKE_MAX_WAIT_MIN = '120'
     }
 
     stages {
@@ -1606,20 +1741,37 @@ pipeline {
                                         behind << (check + [name: vm.name])
                                     }
                                 }
+                                // Handshake: don't touch any database while a Trax install or a
+                                // regression run is in progress. Claimed before the 30-minute
+                                // warning so nobody is told an upgrade is coming that then can't run.
+                                if (behind && !acquireHandshake()) {
+                                    echo "Handshake: Trax and/or regression tests still busy after ${env.HANDSHAKE_MAX_WAIT_MIN} min - not upgrading this run"
+                                    env.HANDSHAKE_BLOCKED = 'true'
+                                    currentBuild.result = 'NOT_BUILT'
+                                    behind = []
+                                }
                                 env.VMS_TO_UPGRADE = behind.collect { it.name }.join(',')
 
                                 if (behind) {
                                     sendPreUpgradeWarning(behind, pgUpgradeAvailable)
                                     echo "Upgrade needed on: ${env.VMS_TO_UPGRADE.replace(',', ', ')} - waiting 30 minutes before starting"
                                     sleep(time: 30, unit: 'MINUTES')
-                                } else {
+                                    // Last check before the first install: "running" has been in the file
+                                    // for 30 minutes by now, but if Trax or regression tests started anyway,
+                                    // wait for them rather than install alongside them.
+                                    if (!waitForHandshakeClear()) {
+                                        echo "Handshake: Trax and/or regression tests became busy during the warning and were still busy after ${env.HANDSHAKE_MAX_WAIT_MIN} min - not upgrading this run"
+                                        env.HANDSHAKE_BLOCKED = 'true'
+                                        currentBuild.result = 'NOT_BUILT'
+                                    }
+                                } else if (env.HANDSHAKE_BLOCKED != 'true') {
                                     echo 'No target VM is behind - skipping the pre-upgrade warning and wait.'
                                 }
                             }
                         }
 
                         for (phase in phases) {
-                            if (phase.vms.isEmpty()) {
+                            if (phase.vms.isEmpty() || env.HANDSHAKE_BLOCKED == 'true') {
                                 continue
                             }
 
@@ -1738,6 +1890,24 @@ pipeline {
                     }
 
                     sendRegressionResultNotification(regressionResults)
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Hand the database back once everything here is done with it, including the
+                // Regression Tests stage above - on success, failure and abort alike. Only if
+                // this build set it to "running" in the first place.
+                if (env.HANDSHAKE_CLAIMED == 'true') {
+                    try {
+                        setPostgresDbStatus('idle')
+                    } catch (Exception e) {
+                        echo "WARNING: ${e.getMessage()} - postgres_db.status is still \"running\" and must be reset to \"idle\" by hand, or Trax and regression tests stay blocked."
+                        currentBuild.result = 'FAILURE'
+                    }
                 }
             }
         }

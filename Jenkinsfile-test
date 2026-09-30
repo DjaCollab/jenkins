@@ -55,6 +55,164 @@ def extractPgVersion(String text) {
 // state via env (a plain Groovy local/closure from one script{} block isn't visible to a
 // separate top-level method).
 
+// Every card in this test pipeline goes to the "PG upgrade Test" Teams channel, via the
+// Teams-PGUP-TEST webhook credential (production's jenkinsfile uses Teams-PGUP instead).
+// A failed post is logged but never fails the build.
+def postTeamsCard(String cardFile, String label) {
+    withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
+        try {
+            withEnv(["TEAMS_CARD_FILE=${cardFile}"]) {
+                powershell '''
+                    try {
+                        $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile $env:TEAMS_CARD_FILE -UseBasicParsing
+                        Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
+                    } catch {
+                        $statusCode = $null
+                        $body = $null
+                        if ($_.Exception.Response) {
+                            $statusCode = [int]$_.Exception.Response.StatusCode
+                            $stream = $_.Exception.Response.GetResponseStream()
+                            if ($stream) {
+                                $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
+                            }
+                        }
+                        Write-Output "Teams webhook error: HTTP $statusCode - $body"
+                        throw
+                    }
+                '''
+            }
+            echo "Teams ${label} sent"
+        } catch (Exception teamsEx) {
+            echo "Failed to send Teams ${label}: ${teamsEx.getMessage()}"
+        }
+    }
+}
+
+// The "VMs to upgrade" fact shown on the pre-upgrade, in-progress and final cards - the list
+// the Pre-upgrade check stage found to be behind (DB build and/or PostgreSQL engine).
+def vmsToUpgradeFact() {
+    def names = (env.VMS_TO_UPGRADE ?: '').split(',').findAll { it }
+    def value = names ? names.collect { jsonEscape(it) }.join(', ') : 'none'
+    return "{\"title\": \"VMs to upgrade\", \"value\": \"${value}\"}"
+}
+
+// Runs once before any VM is actually touched for install, using only a lightweight
+// connectivity + current-build + engine-version check (no checkcon, no schema/site-type
+// gating - those still happen for real in processVm right before the install itself). Purely
+// to know which target VMs are behind, so the "starting in 30 minutes" warning and the VM
+// list on every card are accurate rather than naming VMs that turn out to be up to date.
+def checkNeedsUpgrade(String vmName, boolean pgUpgradeAvailable) {
+    env.DB_HOST = vmName
+    def connRc = bat(
+        script: '''
+            set PGPASSWORD=%DB_PASSWORD%
+            psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -c "SELECT 1;"
+        ''',
+        returnStatus: true
+    )
+    if (connRc != 0) {
+        return [reachable: false]
+    }
+
+    def buildRc = bat(
+        script: '''
+            set PGPASSWORD=%DB_PASSWORD%
+            psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT last_pkg_update();" > pre_check_build.txt
+        ''',
+        returnStatus: true
+    )
+    def currentBuild = (buildRc == 0) ? extractBuildNumber(readFile('pre_check_build.txt').trim()) : null
+    if (!currentBuild) {
+        // last_pkg_update() doesn't exist on older schemas - same ibis_reg_history fallback
+        // processVm uses for the real, later check.
+        def regHistRc = bat(
+            script: '''
+                set PGPASSWORD=%DB_PASSWORD%
+                psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT * FROM ibis_reg_history ORDER BY tim DESC LIMIT 1;" > pre_check_reg_history.txt
+            ''',
+            returnStatus: true
+        )
+        currentBuild = (regHistRc == 0) ? extractBuildNumber(readFile('pre_check_reg_history.txt').trim()) : null
+    }
+    def dbBehind = !(currentBuild == env.INSTALLER_BUILD && !env.INSTALLER_HF)
+
+    def pgVersion = null
+    if (pgUpgradeAvailable) {
+        def pgRc = bat(
+            script: '''
+                set PGPASSWORD=%DB_PASSWORD%
+                psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "select version();" > pre_check_pg_version.txt
+            ''',
+            returnStatus: true
+        )
+        pgVersion = (pgRc == 0) ? extractPgVersion(readFile('pre_check_pg_version.txt').trim()) : null
+    }
+    def pgBehind = pgUpgradeAvailable && pgVersion != env.PG_TARGET_VERSION
+
+    return [reachable: true, currentBuild: currentBuild ?: 'unknown', pgVersion: pgVersion ?: 'unknown',
+            dbBehind: dbBehind, pgBehind: pgBehind, needsUpgrade: dbBehind || pgBehind]
+}
+
+// Sent once, 30 minutes before the first install, so the channel gets advance notice instead
+// of only finding out once an upgrade is already underway. Only fires when at least one target
+// VM is actually behind.
+def sendPreUpgradeWarning(checks, boolean pgUpgradeAvailable) {
+    def vmFacts = checks.collect { c ->
+        def what = []
+        if (c.dbBehind) what << "DB ${c.currentBuild} -> ${env.INSTALLER_LABEL}"
+        if (c.pgBehind) what << "PG ${c.pgVersion} -> ${env.PG_TARGET_VERSION}"
+        "{\"title\": \"${jsonEscape(c.name)}\", \"value\": \"${jsonEscape(what.join(', '))}\"}"
+    }.join(',\n')
+    def pgTargetFact = pgUpgradeAvailable ? ",\n{\"title\": \"PG target version\", \"value\": \"${jsonEscape(env.PG_TARGET_VERSION)}\"}" : ''
+
+    def card = """{
+    "type": "message",
+    "attachments": [
+        {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "⚠️ IBIS upgrade starts in 30 minutes",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "warning",
+                        "wrap": true
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)} • the following VMs will be upgraded",
+                        "isSubtle": true,
+                        "wrap": true
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": "DB target build", "value": "${jsonEscape(env.INSTALLER_LABEL)}"}${pgTargetFact},
+                            ${vmFacts}
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.OpenUrl",
+                        "title": "View build",
+                        "url": "${env.BUILD_URL}"
+                    }
+                ]
+            }
+        }
+    ]
+}"""
+
+    writeFile file: 'teams_card_pre_upgrade.json', text: card, encoding: 'UTF-8'
+    postTeamsCard('teams_card_pre_upgrade.json', 'pre-upgrade warning')
+}
+
 // Sent at most once per build, right when the first real install (PG or DB) actually
 // starts - never for a DRY_RUN or a VM that turns out already up to date, since nothing
 // real is happening in those cases.
@@ -92,7 +250,8 @@ def sendInProgressNotification(String hostName, boolean pgUpgradeAvailable) {
                     {
                         "type": "FactSet",
                         "facts": [
-                            {"title": "DB target build", "value": "${jsonEscape(env.INSTALLER_LABEL)}"}${pgTargetFactInProgress}
+                            {"title": "DB target build", "value": "${jsonEscape(env.INSTALLER_LABEL)}"}${pgTargetFactInProgress},
+                            ${vmsToUpgradeFact()}
                         ]
                     }
                 ],
@@ -109,31 +268,7 @@ def sendInProgressNotification(String hostName, boolean pgUpgradeAvailable) {
 }"""
 
     writeFile file: 'teams_card_in_progress.json', text: inProgressCard, encoding: 'UTF-8'
-    withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
-        try {
-            powershell '''
-                try {
-                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_in_progress.json' -UseBasicParsing
-                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
-                } catch {
-                    $statusCode = $null
-                    $body = $null
-                    if ($_.Exception.Response) {
-                        $statusCode = [int]$_.Exception.Response.StatusCode
-                        $stream = $_.Exception.Response.GetResponseStream()
-                        if ($stream) {
-                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
-                        }
-                    }
-                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
-                    throw
-                }
-            '''
-            echo "Teams in-progress notification sent"
-        } catch (Exception teamsEx) {
-            echo "Failed to send Teams in-progress notification: ${teamsEx.getMessage()}"
-        }
-    }
+    postTeamsCard('teams_card_in_progress.json', 'in-progress notification')
 }
 
 def processVm(vm, group, pgUpgradeAvailable, detail) {
@@ -180,50 +315,206 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                     sendInProgressNotification(vm.name, pgUpgradeAvailable)
 
                                                     try {
-                                                        def pgInstallOutput
-                                                        withEnv(["TARGET_HOST=${vm.name}", "PG_INSTALL_TYPE=${pgInstallType}", "LOCAL_PG_LOG=pg-install-${vm.name}.log"]) {
-                                                            pgInstallOutput = powershell(returnStdout: true, script: '''
+                                                        // Streamed, not captured with returnStdout - a captured script shows nothing in
+                                                        // the console until it returns, which meant up to 30 minutes of silence while
+                                                        // a hung installer was being waited on. The exit code comes back via a file instead.
+                                                        withEnv(["TARGET_HOST=${vm.name}", "PG_INSTALL_TYPE=${pgInstallType}", "LOCAL_PG_LOG=pg-install-${vm.name}.log", "PG_EXIT_FILE=pg-exit-${vm.name}.txt"]) {
+                                                            // Follows the documented manual procedure exactly: clear the stale PostgreSQL
+                                                            // event log source, make sure no local psql/pgAdmin session holds a lock,
+                                                            // stop FTITRAXKernel and IBISJAS, then run the installer with the flags this
+                                                            // installer actually recognizes (/secure /silent - NOT the Inno Setup
+                                                            // /VerySilent /SUPPRESSMSGBOXES flags the DB package installer uses, which
+                                                            // this one silently ignores, falling back to an interactive wizard that hangs
+                                                            // forever in the no-desktop WinRM session). Both services are always
+                                                            // restarted afterward, even on failure/timeout, so a bad upgrade never
+                                                            // leaves the Data Concentrator or app server down.
+                                                            powershell(script: '''
+                                                                Remove-Item -LiteralPath $env:PG_EXIT_FILE -Force -ErrorAction SilentlyContinue
+
                                                                 $securePassword = ConvertTo-SecureString $env:DB_PASSWORD -AsPlainText -Force
                                                                 $credential = New-Object System.Management.Automation.PSCredential("$env:DB_DOMAIN\\$env:DB_USER", $securePassword)
                                                                 $session = New-PSSession -ComputerName $env:TARGET_HOST -Credential $credential
 
                                                                 $remoteDir = "C:\\Temp"
                                                                 $exeName = Split-Path $env:PG_EXE_PATH -Leaf
-                                                                # A leftover, still-locked file from a prior stuck/hung install must never block a
-                                                                # new attempt from copying - so the remote name is unique per Jenkins build.
-                                                                $exeBase = [System.IO.Path]::GetFileNameWithoutExtension($exeName)
-                                                                $exeExt = [System.IO.Path]::GetExtension($exeName)
-                                                                $remotePath = Join-Path $remoteDir "$exeBase-build$env:BUILD_NUMBER$exeExt"
-                                                                $remoteLog = Join-Path $remoteDir "pg-install-$env:PG_INSTALL_TYPE.log"
+                                                                # Stable remote name (just the source leaf) so a copy left from an earlier run
+                                                                # can be found and reused instead of transferring the installer again.
+                                                                $remotePath = Join-Path $remoteDir $exeName
 
                                                                 Invoke-Command -Session $session -ScriptBlock {
                                                                     param($dir)
                                                                     New-Item -ItemType Directory -Force -Path $dir | Out-Null
                                                                 } -ArgumentList $remoteDir
 
-                                                                Copy-Item -Path $env:PG_EXE_PATH -Destination $remotePath -ToSession $session
+                                                                # If the installer already exists on the VM in C:\\Temp, use it AS-IS and never
+                                                                # overwrite it. The Y: source is currently a known-corrupt copy, so a good
+                                                                # installer is staged manually on each VM - re-copying (or even size-checking
+                                                                # against Y:) would clobber that good file with the corrupt one. Only copy from
+                                                                # Y: when nothing is staged, and verify the copied size matches the source.
+                                                                $existsRemotely = Invoke-Command -Session $session -ScriptBlock {
+                                                                    param($path)
+                                                                    Test-Path -LiteralPath $path
+                                                                } -ArgumentList $remotePath
 
-                                                                $exitCode = Invoke-Command -Session $session -ScriptBlock {
-                                                                    param($path, $log, $installType)
-                                                                    $installArgs = @(
-                                                                        "/VerySilent",
-                                                                        "/SUPPRESSMSGBOXES",
-                                                                        "/NORESTART",
-                                                                        "/LOG=$log",
-                                                                        "/InstallType=$installType"
-                                                                    )
-                                                                    $p = Start-Process -FilePath $path -ArgumentList $installArgs -PassThru
-                                                                    # WinRM runs this in session 0 with no desktop. A silent installer that
-                                                                    # still pops a dialog would otherwise wait forever with no output.
-                                                                    if (-not $p.WaitForExit(90 * 60 * 1000)) {
-                                                                        $p.Kill()
-                                                                        return 8002
+                                                                if ($existsRemotely) {
+                                                                    Write-Output "Installer already present on $env:TARGET_HOST at $remotePath - using existing copy as-is (not overwriting)"
+                                                                    $copyOk = $true
+                                                                } else {
+                                                                    # Copy-Item -ToSession over WinRM has been observed to silently corrupt/truncate
+                                                                    # large installer binaries in transit - verify the copied size matches the
+                                                                    # source and retry before handing a broken file to the installer.
+                                                                    $sourceSize = (Get-Item -LiteralPath $env:PG_EXE_PATH).Length
+                                                                    $copyOk = $false
+                                                                    for ($attempt = 1; $attempt -le 3; $attempt++) {
+                                                                        Copy-Item -Path $env:PG_EXE_PATH -Destination $remotePath -ToSession $session -Force
+                                                                        $destSize = Invoke-Command -Session $session -ScriptBlock {
+                                                                            param($path)
+                                                                            if (Test-Path -LiteralPath $path) { (Get-Item -LiteralPath $path).Length } else { -1 }
+                                                                        } -ArgumentList $remotePath
+                                                                        if ($destSize -eq $sourceSize) {
+                                                                            $copyOk = $true
+                                                                            break
+                                                                        }
+                                                                        Write-Output "Copy attempt $attempt/3 to $env:TARGET_HOST mismatched size (got $destSize, expected $sourceSize) - retrying"
                                                                     }
-                                                                    return $p.ExitCode
-                                                                } -ArgumentList $remotePath, $remoteLog, $env:PG_INSTALL_TYPE
+                                                                }
+
+                                                                if ($copyOk) {
+                                                                    $exitCode = Invoke-Command -Session $session -ScriptBlock {
+                                                                        param($path, $installType, $targetVersion)
+
+                                                                        Remove-Eventlog -Source 'PostgreSQL' -ErrorAction SilentlyContinue
+
+                                                                        Get-Process -Name 'psql', 'pgAdmin4' -ErrorAction SilentlyContinue |
+                                                                            Stop-Process -Force -ErrorAction SilentlyContinue
+
+                                                                        # Stop-Service waits with no timeout - a JAS instance that won't shut down
+                                                                        # cleanly (busy Java app server) hangs the whole remote command forever.
+                                                                        # Initiate the stop, wait a bounded 2 min, then force-kill the process so
+                                                                        # the install can still proceed rather than blocking until the 4h timeout.
+                                                                        function Stop-ServiceBounded {
+                                                                            param($name, $timeoutSec)
+                                                                            $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+                                                                            if (-not $svc -or $svc.Status -eq 'Stopped') { return }
+                                                                            try { $svc.Stop() } catch {}
+                                                                            try {
+                                                                                $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds($timeoutSec))
+                                                                            } catch {
+                                                                                # Write-Host, not Write-Output - anything written to the output stream here
+                                                                                # would end up in $exitCode alongside the real return value.
+                                                                                Write-Host "Service $name did not stop within $timeoutSec s - force-killing its process"
+                                                                                $svcPid = (Get-CimInstance Win32_Service -Filter "Name='$name'" -ErrorAction SilentlyContinue).ProcessId
+                                                                                if ($svcPid) { Stop-Process -Id $svcPid -Force -ErrorAction SilentlyContinue }
+                                                                            }
+                                                                        }
+                                                                        # Start-Service has no timeout either - a service stuck in StartPending
+                                                                        # would hold the remote command (and the build) until the 4h timeout.
+                                                                        function Start-ServiceBounded {
+                                                                            param($name, $timeoutSec)
+                                                                            $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+                                                                            if (-not $svc -or $svc.Status -eq 'Running') { return }
+                                                                            try { $svc.Start() } catch {}
+                                                                            try {
+                                                                                $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds($timeoutSec))
+                                                                            } catch {
+                                                                                Write-Host "Service $name did not reach Running within $timeoutSec s - continuing"
+                                                                            }
+                                                                        }
+                                                                        # Kills the installer AND its Inno Setup .tmp child - Kill() on the launcher
+                                                                        # alone leaves the .tmp running (and holding files) on the VM.
+                                                                        function Stop-InstallerTree {
+                                                                            param($proc)
+                                                                            & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null
+                                                                        }
+                                                                        # Engine version of the installed binaries, read from the service's own
+                                                                        # pg_ctl path (so it follows a 14 -> 17 directory change). postgres -V is
+                                                                        # answered before the "no admin users" check, so it runs fine here.
+                                                                        function Get-InstalledPgVersion {
+                                                                            $svc = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+                                                                                   Where-Object { $_.PathName -match 'pg_ctl\\.exe' } | Select-Object -First 1
+                                                                            if (-not $svc -or $svc.State -ne 'Running') { return $null }
+                                                                            if ($svc.PathName -notmatch '^"?(.*?)pg_ctl\\.exe') { return $null }
+                                                                            $out = & (Join-Path $Matches[1] 'postgres.exe') -V 2>$null
+                                                                            if ("$out" -match '(\\d+\\.\\d+)\\s*$') { return $Matches[1] }
+                                                                            return $null
+                                                                        }
+                                                                        Stop-ServiceBounded 'FTITRAXKernel' 120
+                                                                        Stop-ServiceBounded 'IBISJAS' 120
+
+                                                                        try {
+                                                                            $installArgs = @(
+                                                                                "/InstallType=$installType",
+                                                                                "/secure",
+                                                                                "/silent"
+                                                                            )
+                                                                            $installStart = Get-Date
+                                                                            # Launch it the way it is run by hand - from its own folder, by relative
+                                                                            # name - so the installer's working directory is the folder it lives in.
+                                                                            # Start-Process rather than & so we keep a handle for the watchdog below.
+                                                                            $installDir = Split-Path -Parent $path
+                                                                            Push-Location $installDir
+                                                                            try {
+                                                                                $p = Start-Process -FilePath (Join-Path '.' (Split-Path -Leaf $path)) -ArgumentList $installArgs -WorkingDirectory $installDir -PassThru
+                                                                            } finally {
+                                                                                Pop-Location
+                                                                            }
+                                                                            # After a good upgrade the installer asks the user to agree to restart the VM.
+                                                                            # WinRM runs this in session 0 with no desktop, so that prompt is invisible and
+                                                                            # the installer never exits. The restart is not wanted - ignore the prompt: poll
+                                                                            # every 30 s, and once the engine is at the target and the install log has been
+                                                                            # idle for 5 min, kill the installer without rebooting (8004). Still a hard 30 min
+                                                                            # cap (8002) for a genuinely stuck install.
+                                                                            $logDir = 'C:\\Program Files\\PostgreSQL\\instlog'
+                                                                            $deadline = (Get-Date).AddMinutes(30)
+                                                                            while (-not $p.WaitForExit(30 * 1000)) {
+                                                                                if ((Get-Date) -gt $deadline) {
+                                                                                    Write-Host "Installer still running after 30 min - killing it"
+                                                                                    Stop-InstallerTree $p
+                                                                                    return 8002
+                                                                                }
+                                                                                $ver = Get-InstalledPgVersion
+                                                                                # Only logs this install has written - the folder also holds logs from past
+                                                                                # installs, and one of those would read as "idle for months" and trigger
+                                                                                # the kill the moment the new binaries report the target version.
+                                                                                $lastLog = Get-ChildItem -Path $logDir -File -ErrorAction SilentlyContinue |
+                                                                                           Where-Object { $_.LastWriteTime -ge $installStart } |
+                                                                                           Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                                                                                $idleMin = if ($lastLog) { [math]::Round(((Get-Date) - $lastLog.LastWriteTime).TotalMinutes, 1) } else { $null }
+                                                                                $verText = if ($ver) { $ver } else { 'n/a' }
+                                                                                $idleText = if ($null -ne $idleMin) { "$idleMin min ($($lastLog.Name))" } else { 'n/a - no log written by this install yet' }
+                                                                                Write-Host "Installer running - engine: $verText, install log idle: $idleText"
+                                                                                if ($ver -eq $targetVersion -and $null -ne $idleMin -and $idleMin -ge 5) {
+                                                                                    Write-Host "Engine is at $targetVersion and the installer has been idle $idleMin min - assuming it is waiting on the restart prompt - ignoring it (no reboot), killing the installer"
+                                                                                    Stop-InstallerTree $p
+                                                                                    return 8004
+                                                                                }
+                                                                            }
+                                                                            return $p.ExitCode
+                                                                        } finally {
+                                                                            Start-ServiceBounded 'FTITRAXKernel' 120
+                                                                            Start-ServiceBounded 'IBISJAS' 120
+                                                                        }
+                                                                    } -ArgumentList $remotePath, $env:PG_INSTALL_TYPE, $env:PG_TARGET_VERSION
+                                                                } else {
+                                                                    Write-Output "Giving up after 3 corrupted-copy attempts to $env:TARGET_HOST"
+                                                                    $exitCode = 8003
+                                                                }
 
                                                                 try {
-                                                                    Copy-Item -Path $remoteLog -Destination $env:LOCAL_PG_LOG -FromSession $session -ErrorAction Stop
+                                                                    # Fixed folder, but the file name carries the install timestamp and its prefix
+                                                                    # varies: PGupgrade_20260918-153000.log / PGminor_20260928-122628.log while
+                                                                    # running, finalized as Setup_2026SEP28-125808.log - so take the newest of any.
+                                                                    $remoteLog = Invoke-Command -Session $session -ScriptBlock {
+                                                                        $f = Get-ChildItem -Path 'C:\\Program Files\\PostgreSQL\\instlog' -Filter '*.log' -File -ErrorAction SilentlyContinue |
+                                                                             Where-Object { $_.Name -match '^(PGupgrade|PGminor|Setup)_' } |
+                                                                             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                                                                        if ($f) { $f.FullName }
+                                                                    }
+                                                                    if ($remoteLog) {
+                                                                        Copy-Item -Path $remoteLog -Destination $env:LOCAL_PG_LOG -FromSession $session -ErrorAction Stop
+                                                                    } else {
+                                                                        Write-Output "LOGCOPY:failed - no PGupgrade_/PGminor_/Setup_*.log found under C:\\Program Files\\PostgreSQL\\instlog"
+                                                                    }
                                                                 } catch {
                                                                     Write-Output "LOGCOPY:failed - $($_.Exception.Message)"
                                                                 }
@@ -231,14 +522,21 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                                 Remove-PSSession $session
 
                                                                 Write-Output "EXITCODE:$exitCode"
+                                                                Set-Content -LiteralPath $env:PG_EXIT_FILE -Value $exitCode -Encoding ASCII
                                                             '''.trim())
                                                         }
-                                                        echo pgInstallOutput
-                                                        def pgExitLine = pgInstallOutput.readLines().find { it.startsWith('EXITCODE:') }
-                                                        def pgExitCode = pgExitLine ? pgExitLine.replace('EXITCODE:', '').trim() : 'unknown'
+                                                        def pgExitFile = "pg-exit-${vm.name}.txt"
+                                                        def pgExitCode = fileExists(pgExitFile) ? readFile(pgExitFile).trim() : 'unknown'
 
-                                                        // Inno Setup: 0 = done, 3010 = done but the machine wants a reboot. 8002 is ours, set above.
-                                                        if (pgExitCode == '0' || pgExitCode == '3010') {
+                                                        // Inno Setup: 0 = done, 3010 = done but the machine wants a reboot. 8002, 8003 and 8004
+                                                        // are ours, set above. 8002 (killed at 30 min) and 8004 (killed at the restart prompt after finishing)
+                                                        // still get the database check - the installer is known to hang AFTER a good upgrade.
+                                                        def pgExitNote = [
+                                                            '3010': ' (reboot pending)',
+                                                            '8002': ' (installer hung, killed after 30 min)',
+                                                            '8004': ' (restart prompt ignored, no reboot)'
+                                                        ][pgExitCode] ?: ''
+                                                        if (pgExitCode in ['0', '3010', '8002', '8004']) {
                                                             // Trust the database, not the exit code.
                                                             def pgVerifyRc = bat(
                                                                 script: '''
@@ -250,7 +548,7 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                             def postPgVersion = (pgVerifyRc == 0) ? extractPgVersion(readFile('pg_engine_version_post.txt').trim()) : null
 
                                                             if (postPgVersion == env.PG_TARGET_VERSION) {
-                                                                detail << [label: 'PostgreSQL engine', passed: true, value: "upgraded ${pgEngineVersion} -> ${postPgVersion}${pgExitCode == '3010' ? ' (reboot pending)' : ''}"]
+                                                                detail << [label: 'PostgreSQL engine', passed: true, value: "upgraded ${pgEngineVersion} -> ${postPgVersion}${pgExitNote}"]
                                                             } else {
                                                                 detail << [label: 'PostgreSQL engine', passed: false, value: "exit ${pgExitCode} but database reports ${postPgVersion ?: 'unknown'}, expected ${env.PG_TARGET_VERSION}"]
                                                                 env.PG_UPGRADE_ABORTED = 'true'
@@ -464,9 +762,13 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
 
                                                     try {
                                                         def extraArgsJoined = vm.extraArgs.join(',')
-                                                        def installOutput
-                                                        withEnv(["TARGET_HOST=${vm.name}", "EXTRA_ARGS=${extraArgsJoined}", "LOCAL_LOG=install-${vm.name}.log"]) {
-                                                            installOutput = powershell(returnStdout: true, script: '''
+                                                        // Streamed, not captured with returnStdout - a captured script shows nothing in
+                                                        // the console until it returns, which meant up to 30 minutes of silence while
+                                                        // a hung installer was being waited on. The exit code comes back via a file instead.
+                                                        withEnv(["TARGET_HOST=${vm.name}", "EXTRA_ARGS=${extraArgsJoined}", "LOCAL_LOG=install-${vm.name}.log", "DB_EXIT_FILE=db-exit-${vm.name}.txt"]) {
+                                                            powershell(script: '''
+                                                                Remove-Item -LiteralPath $env:DB_EXIT_FILE -Force -ErrorAction SilentlyContinue
+
                                                                 $securePassword = ConvertTo-SecureString $env:DB_PASSWORD -AsPlainText -Force
                                                                 $credential = New-Object System.Management.Automation.PSCredential("$env:DB_DOMAIN\\$env:DB_USER", $securePassword)
                                                                 $session = New-PSSession -ComputerName $env:TARGET_HOST -Credential $credential
@@ -474,10 +776,13 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                                 $remoteDir = "C:\\Temp"
                                                                 $exeName = Split-Path $env:INSTALLER_PATH -Leaf
                                                                 # A leftover, still-locked file from a prior stuck/hung install must never block a
-                                                                # new attempt from copying - so the remote name is unique per Jenkins build.
+                                                                # new attempt from copying - so the remote name is unique per attempt, not just
+                                                                # per build number (a "Restart from Stage" reuses the same build number, so a
+                                                                # build-number-only suffix would still collide with that earlier attempt's file).
                                                                 $exeBase = [System.IO.Path]::GetFileNameWithoutExtension($exeName)
                                                                 $exeExt = [System.IO.Path]::GetExtension($exeName)
-                                                                $remotePath = Join-Path $remoteDir "$exeBase-build$env:BUILD_NUMBER$exeExt"
+                                                                $attemptId = [guid]::NewGuid().ToString('N').Substring(0, 8)
+                                                                $remotePath = Join-Path $remoteDir "$exeBase-build$env:BUILD_NUMBER-$attemptId$exeExt"
                                                                 $remoteLog = Join-Path $remoteDir "ibis-install-$env:INSTALLER_BUILD.log"
 
                                                                 Invoke-Command -Session $session -ScriptBlock {
@@ -493,33 +798,56 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                                 if ($freeGb -lt 5) {
                                                                     Remove-PSSession $session
                                                                     Write-Output "EXITCODE:8001"
+                                                                    Set-Content -LiteralPath $env:DB_EXIT_FILE -Value 8001 -Encoding ASCII
                                                                     exit 0
                                                                 }
 
-                                                                Copy-Item -Path $env:INSTALLER_PATH -Destination $remotePath -ToSession $session
+                                                                # Copy-Item -ToSession over WinRM has been observed to silently corrupt/truncate
+                                                                # large installer binaries in transit ("The setup files are corrupted" when later
+                                                                # run on the VM) - verify the copied size matches the source and retry before
+                                                                # giving up, rather than handing a broken file to the installer.
+                                                                $sourceSize = (Get-Item -LiteralPath $env:INSTALLER_PATH).Length
+                                                                $copyOk = $false
+                                                                for ($attempt = 1; $attempt -le 3; $attempt++) {
+                                                                    Copy-Item -Path $env:INSTALLER_PATH -Destination $remotePath -ToSession $session -Force
+                                                                    $destSize = Invoke-Command -Session $session -ScriptBlock {
+                                                                        param($path)
+                                                                        if (Test-Path -LiteralPath $path) { (Get-Item -LiteralPath $path).Length } else { -1 }
+                                                                    } -ArgumentList $remotePath
+                                                                    if ($destSize -eq $sourceSize) {
+                                                                        $copyOk = $true
+                                                                        break
+                                                                    }
+                                                                    Write-Output "Copy attempt $attempt/3 to $env:TARGET_HOST mismatched size (got $destSize, expected $sourceSize) - retrying"
+                                                                }
 
                                                                 $extraArgs = @($env:EXTRA_ARGS -split ',' | Where-Object { $_ -ne '' })
 
-                                                                $exitCode = Invoke-Command -Session $session -ScriptBlock {
-                                                                    param($path, $log, $dbUser, $dbPwd, $extra)
-                                                                    $installArgs = @(
-                                                                        "/VerySilent",
-                                                                        "/SUPPRESSMSGBOXES",
-                                                                        "/NORESTART",
-                                                                        "/LOG=$log",
-                                                                        "/InstallType=UpgDB",
-                                                                        "/UserName=$dbUser",
-                                                                        "/UserPwd=$dbPwd"
-                                                                    ) + $extra
-                                                                    $p = Start-Process -FilePath $path -ArgumentList $installArgs -PassThru
-                                                                    # WinRM runs this in session 0 with no desktop. A silent installer that
-                                                                    # still pops a dialog would otherwise wait forever with no output.
-                                                                    if (-not $p.WaitForExit(90 * 60 * 1000)) {
-                                                                        $p.Kill()
-                                                                        return 8002
-                                                                    }
-                                                                    return $p.ExitCode
-                                                                } -ArgumentList $remotePath, $remoteLog, $env:DB_USER, $env:DB_PASSWORD, $extraArgs
+                                                                if ($copyOk) {
+                                                                    $exitCode = Invoke-Command -Session $session -ScriptBlock {
+                                                                        param($path, $log, $dbUser, $dbPwd, $extra)
+                                                                        $installArgs = @(
+                                                                            "/VerySilent",
+                                                                            "/SUPPRESSMSGBOXES",
+                                                                            "/NORESTART",
+                                                                            "/LOG=$log",
+                                                                            "/InstallType=UpgDB",
+                                                                            "/UserName=$dbUser",
+                                                                            "/UserPwd=$dbPwd"
+                                                                        ) + $extra
+                                                                        $p = Start-Process -FilePath $path -ArgumentList $installArgs -PassThru
+                                                                        # WinRM runs this in session 0 with no desktop. A silent installer that
+                                                                        # still pops a dialog would otherwise wait forever with no output.
+                                                                        if (-not $p.WaitForExit(30 * 60 * 1000)) {
+                                                                            $p.Kill()
+                                                                            return 8002
+                                                                        }
+                                                                        return $p.ExitCode
+                                                                    } -ArgumentList $remotePath, $remoteLog, $env:DB_USER, $env:DB_PASSWORD, $extraArgs
+                                                                } else {
+                                                                    Write-Output "Giving up after 3 corrupted-copy attempts to $env:TARGET_HOST"
+                                                                    $exitCode = 8003
+                                                                }
 
                                                                 # Pull the log back so it survives as a build artifact even on failure.
                                                                 try {
@@ -531,13 +859,13 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                                 Remove-PSSession $session
 
                                                                 Write-Output "EXITCODE:$exitCode"
+                                                                Set-Content -LiteralPath $env:DB_EXIT_FILE -Value $exitCode -Encoding ASCII
                                                             '''.trim())
                                                         }
-                                                        echo installOutput
-                                                        def exitLine = installOutput.readLines().find { it.startsWith('EXITCODE:') }
-                                                        def exitCode = exitLine ? exitLine.replace('EXITCODE:', '').trim() : 'unknown'
+                                                        def dbExitFile = "db-exit-${vm.name}.txt"
+                                                        def exitCode = fileExists(dbExitFile) ? readFile(dbExitFile).trim() : 'unknown'
                                                         // Inno Setup: 0 = done, 3010 = done but the machine wants a reboot.
-                                                        // 8001 and 8002 are ours, set above.
+                                                        // 8001, 8002 and 8003 are ours, set above.
                                                         if (exitCode == '0' || exitCode == '3010') {
                                                             if (exitCode == '3010') {
                                                                 echo "Installer on ${vm.name} finished but reports a reboot is required."
@@ -566,7 +894,8 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                             }
                                                         } else {
                                                             def why = (exitCode == '8001') ? 'less than 5 GB free on C: - aborted before copying the installer'
-                                                                    : (exitCode == '8002') ? 'installer still running after 90 min - killed'
+                                                                    : (exitCode == '8002') ? 'installer still running after 30 min - killed'
+                                                                    : (exitCode == '8003') ? 'installer copy to the VM was corrupted 3 times in a row - gave up'
                                                                     : "installer exit code ${exitCode}"
                                                             echo "Install on ${vm.name} failed: ${why}"
                                                             status = 'Failed'
@@ -763,6 +1092,14 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                             archiveArtifacts artifacts: 'upgrade_report.html, install-*.log', allowEmptyArchive: true
                             echo "Report written to upgrade_report.html and archived as a build artifact"
 
+                            // A DRY_RUN never actually changes anything, so no Teams notification
+                            // should follow one - the HTML report above is still written/archived
+                            // as a build artifact, just not pushed anywhere.
+                            if (params.DRY_RUN) {
+                                echo 'DRY_RUN: skipping Teams notifications (PostgreSQL mismatch and summary report).'
+                                return
+                            }
+
                             // A VM stuck on an older PostgreSQL engine than PG_VERSION_EXPECTED is
                             // permanently blocked from getting the DB package until PG is upgraded -
                             // that's actionable and easy to miss inside a routine "no VM upgraded"
@@ -812,8 +1149,11 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                             writeFile file: notifyStateFile, text: notifiedFailures.collect { k, v -> "${k}=${v}" }.join('\n')
 
                             // Nothing to tell anyone if every VM was already up to date, or if the only
-                            // failures present are ones already notified and still unresolved.
-                            if (successCount > 0 || newFailureVms.size() > 0) {
+                            // failures present are ones already notified and still unresolved. A run that
+                            // sent the 30-minute warning always gets its closing card, success or failure,
+                            // so the channel is never left with a warning and no outcome.
+                            def upgradePlanned = (env.VMS_TO_UPGRADE ?: '') != ''
+                            if (upgradePlanned || successCount > 0 || newFailureVms.size() > 0) {
                                 def overallResult = currentBuild.currentResult ?: 'SUCCESS'
                                 def resultColor = (overallResult == 'SUCCESS') ? 'good' : (overallResult == 'FAILURE') ? 'attention' : 'warning'
                                 def resultIcon = (overallResult == 'SUCCESS') ? '✅' : (overallResult == 'FAILURE') ? '❌' : '⚠️'
@@ -839,7 +1179,7 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                 "body": [
                     {
                         "type": "TextBlock",
-                        "text": "${resultIcon} IBIS DB Upgrade Report",
+                        "text": "${resultIcon} IBIS upgrade ${overallResult == 'SUCCESS' ? 'succeeded' : overallResult == 'FAILURE' ? 'failed' : 'finished with warnings'}",
                         "size": "Large",
                         "weight": "Bolder",
                         "color": "${resultColor}"
@@ -854,6 +1194,7 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                         "type": "FactSet",
                         "facts": [
                             {"title": "DB target build", "value": "${jsonEscape(env.INSTALLER_LABEL)}"}${pgTargetFact},
+                            ${vmsToUpgradeFact()},
                             {"title": "Result", "value": "${successCount} success / ${failedCount} failed / ${skippedCount} skipped"},
                             ${vmFacts}
                         ]
@@ -875,155 +1216,10 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                                 // writeFile's default platform charset on Windows can mangle those into
                                 // invalid JSON, which Power Automate then rejects with a 400.
                                 writeFile file: 'teams_card.json', text: teamsCard, encoding: 'UTF-8'
-                                withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
-                                    try {
-                                        powershell '''
-                                            try {
-                                                $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card.json' -UseBasicParsing
-                                                Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
-                                            } catch {
-                                                $statusCode = $null
-                                                $body = $null
-                                                if ($_.Exception.Response) {
-                                                    $statusCode = [int]$_.Exception.Response.StatusCode
-                                                    $stream = $_.Exception.Response.GetResponseStream()
-                                                    if ($stream) {
-                                                        $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
-                                                    }
-                                                }
-                                                Write-Output "Teams webhook error: HTTP $statusCode - $body"
-                                                throw
-                                            }
-                                        '''
-                                        echo "Teams notification sent"
-                                    } catch (Exception teamsEx) {
-                                        echo "Failed to send Teams notification: ${teamsEx.getMessage()}"
-                                    }
-                                }
+                                postTeamsCard('teams_card.json', 'final result card')
                             } else {
                                 echo "Skipping Teams notification - no VM was upgraded, and any failure(s) present were already notified for this version"
                             }
-}
-
-// Runs once before any VM is actually touched for install, using only a lightweight
-// connectivity + current-build check (no checkcon, no PG/schema/site-type gating - those
-// still happen for real in processVm right before the install itself). Purely to know which
-// target VMs are behind the staged build so the "starting in N minutes" warning below is
-// accurate rather than firing for VMs that turn out to already be up to date.
-def checkNeedsUpgrade(vmName) {
-    env.DB_HOST = vmName
-    def connRc = bat(
-        script: '''
-            set PGPASSWORD=%DB_PASSWORD%
-            psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -c "SELECT 1;"
-        ''',
-        returnStatus: true
-    )
-    if (connRc != 0) {
-        return [reachable: false]
-    }
-
-    def buildRc = bat(
-        script: '''
-            set PGPASSWORD=%DB_PASSWORD%
-            psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT last_pkg_update();" > pre_check_build.txt
-        ''',
-        returnStatus: true
-    )
-    def currentBuild = (buildRc == 0) ? extractBuildNumber(readFile('pre_check_build.txt').trim()) : null
-    if (!currentBuild) {
-        // last_pkg_update() doesn't exist on older schemas - same ibis_reg_history fallback
-        // processVm uses for the real, later check.
-        def regHistRc = bat(
-            script: '''
-                set PGPASSWORD=%DB_PASSWORD%
-                psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT * FROM ibis_reg_history ORDER BY tim DESC LIMIT 1;" > pre_check_reg_history.txt
-            ''',
-            returnStatus: true
-        )
-        currentBuild = (regHistRc == 0) ? extractBuildNumber(readFile('pre_check_reg_history.txt').trim()) : null
-    }
-
-    def needsUpgrade = !(currentBuild == env.INSTALLER_BUILD && !env.INSTALLER_HF)
-    return [reachable: true, currentBuild: currentBuild ?: 'unknown', needsUpgrade: needsUpgrade]
-}
-
-// Sent once, before any VM is actually touched, so operators get advance notice instead of
-// only finding out an upgrade is underway once it has already started (see
-// sendInProgressNotification for that per-VM "in progress" ping). Only fires when at least
-// one target VM is actually behind the staged build.
-def sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, toLabel) {
-    def vmFacts = vmsNeedingUpgrade.collect { "{\"title\": \"${jsonEscape(it)}\", \"value\": \"upgrade needed\"}" }.join(',\n')
-
-    def card = """{
-    "type": "message",
-    "attachments": [
-        {
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type": "AdaptiveCard",
-                "version": "1.4",
-                "body": [
-                    {
-                        "type": "TextBlock",
-                        "text": "⚠️ Upgrade from ${jsonEscape(fromLabel)} to ${jsonEscape(toLabel)} of the following VMs will start in 30 minutes",
-                        "size": "Large",
-                        "weight": "Bolder",
-                        "color": "warning",
-                        "wrap": true
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": "${jsonEscape(env.TRIGGER_CAUSE)}",
-                        "isSubtle": true,
-                        "wrap": true
-                    },
-                    {
-                        "type": "FactSet",
-                        "facts": [
-                            ${vmFacts}
-                        ]
-                    }
-                ],
-                "actions": [
-                    {
-                        "type": "Action.OpenUrl",
-                        "title": "View build",
-                        "url": "${env.BUILD_URL}"
-                    }
-                ]
-            }
-        }
-    ]
-}"""
-
-    writeFile file: 'teams_card_pre_upgrade.json', text: card, encoding: 'UTF-8'
-    withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
-        try {
-            powershell '''
-                try {
-                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_pre_upgrade.json' -UseBasicParsing
-                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
-                } catch {
-                    $statusCode = $null
-                    $body = $null
-                    if ($_.Exception.Response) {
-                        $statusCode = [int]$_.Exception.Response.StatusCode
-                        $stream = $_.Exception.Response.GetResponseStream()
-                        if ($stream) {
-                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
-                        }
-                    }
-                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
-                    throw
-                }
-            '''
-            echo "Teams pre-upgrade warning sent"
-        } catch (Exception teamsEx) {
-            echo "Failed to send Teams pre-upgrade warning: ${teamsEx.getMessage()}"
-        }
-    }
 }
 
 // Sent whenever one or more VMs are blocked because their PostgreSQL engine doesn't match
@@ -1076,31 +1272,7 @@ def sendPgEngineMismatchWarning(mismatches) {
 }"""
 
     writeFile file: 'teams_card_pg_mismatch.json', text: card, encoding: 'UTF-8'
-    withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
-        try {
-            powershell '''
-                try {
-                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_pg_mismatch.json' -UseBasicParsing
-                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
-                } catch {
-                    $statusCode = $null
-                    $body = $null
-                    if ($_.Exception.Response) {
-                        $statusCode = [int]$_.Exception.Response.StatusCode
-                        $stream = $_.Exception.Response.GetResponseStream()
-                        if ($stream) {
-                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
-                        }
-                    }
-                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
-                    throw
-                }
-            '''
-            echo "Teams PostgreSQL-mismatch warning sent"
-        } catch (Exception teamsEx) {
-            echo "Failed to send Teams PostgreSQL-mismatch warning: ${teamsEx.getMessage()}"
-        }
-    }
+    postTeamsCard('teams_card_pg_mismatch.json', 'PostgreSQL-mismatch warning')
 }
 
 // Sent once, right as the Regression Tests stage begins, naming the VMs about to be checked.
@@ -1150,31 +1322,7 @@ def sendRegressionStartNotification(vmNames) {
 }"""
 
     writeFile file: 'teams_card_regression_start.json', text: card, encoding: 'UTF-8'
-    withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
-        try {
-            powershell '''
-                try {
-                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_regression_start.json' -UseBasicParsing
-                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
-                } catch {
-                    $statusCode = $null
-                    $body = $null
-                    if ($_.Exception.Response) {
-                        $statusCode = [int]$_.Exception.Response.StatusCode
-                        $stream = $_.Exception.Response.GetResponseStream()
-                        if ($stream) {
-                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
-                        }
-                    }
-                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
-                    throw
-                }
-            '''
-            echo "Teams regression-start notification sent"
-        } catch (Exception teamsEx) {
-            echo "Failed to send Teams regression-start notification: ${teamsEx.getMessage()}"
-        }
-    }
+    postTeamsCard('teams_card_regression_start.json', 'regression-start notification')
 }
 
 // Sent once, at the end of the Regression Tests stage - a single pass/fail card naming exactly
@@ -1233,31 +1381,126 @@ def sendRegressionResultNotification(regressionResults) {
 }"""
 
     writeFile file: 'teams_card_regression_result.json', text: card, encoding: 'UTF-8'
-    withCredentials([string(credentialsId: 'Teams-PGUP-TEST', variable: 'TEAMS_WEBHOOK_URL')]) {
+    postTeamsCard('teams_card_regression_result.json', 'regression-result notification')
+}
+
+// Automation handshake (HANDSHAKE_FILE) - shared with the Trax install script and the
+// regression-test script. This pipeline owns only postgres_db.status ("idle"/"running")
+// and only reads trax.status and regression_tests.status.
+// Returns [trax: ..., regression: ...], or null if the file could not be read right now
+// (e.g. another script is mid-write) - the caller just tries again on the next poll.
+def readHandshake() {
+    def out = powershell(returnStdout: true, script: '''
         try {
-            powershell '''
-                try {
-                    $response = Invoke-WebRequest -Uri $env:TEAMS_WEBHOOK_URL -Method Post -ContentType 'application/json' -InFile 'teams_card_regression_result.json' -UseBasicParsing
-                    Write-Output "Teams webhook response: HTTP $($response.StatusCode) - $($response.Content)"
-                } catch {
-                    $statusCode = $null
-                    $body = $null
-                    if ($_.Exception.Response) {
-                        $statusCode = [int]$_.Exception.Response.StatusCode
-                        $stream = $_.Exception.Response.GetResponseStream()
-                        if ($stream) {
-                            $body = (New-Object System.IO.StreamReader($stream)).ReadToEnd()
-                        }
-                    }
-                    Write-Output "Teams webhook error: HTTP $statusCode - $body"
-                    throw
-                }
-            '''
-            echo "Teams regression-result notification sent"
-        } catch (Exception teamsEx) {
-            echo "Failed to send Teams regression-result notification: ${teamsEx.getMessage()}"
+            $h = Get-Content -LiteralPath $env:HANDSHAKE_FILE -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            Write-Output "OK|$($h.trax.status)|$($h.regression_tests.status)"
+        } catch {
+            Write-Output "ERR|$($_.Exception.Message)"
         }
+    ''').trim()
+    def parts = out.split('\\|', -1)
+    if (parts[0] != 'OK') {
+        echo "Handshake: could not read ${env.HANDSHAKE_FILE}: ${parts.size() > 1 ? parts[1] : out}"
+        return null
     }
+    return [trax: parts[1].trim(), regression: parts[2].trim()]
+}
+
+// Rewrites only postgres_db.status, keeping everything else in the file as-is. Written
+// to a temp file and moved into place so a reader never sees a half-written file.
+def setPostgresDbStatus(String status) {
+    withEnv(["HANDSHAKE_PG_STATUS=${status}"]) {
+        def out = powershell(returnStdout: true, script: '''
+            $path = $env:HANDSHAKE_FILE
+            $lastError = ''
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+                try {
+                    $h = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                    if ($h.postgres_db) {
+                        $h.postgres_db.status = $env:HANDSHAKE_PG_STATUS
+                    } else {
+                        $h | Add-Member -NotePropertyName postgres_db -NotePropertyValue ([pscustomobject]@{ status = $env:HANDSHAKE_PG_STATUS })
+                    }
+                    $tmp = "$path.tmp"
+                    [System.IO.File]::WriteAllText($tmp, ($h | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding $false))
+                    Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop
+                    Write-Output 'OK'
+                    return
+                } catch {
+                    $lastError = $_.Exception.Message
+                    Start-Sleep -Seconds 2
+                }
+            }
+            Write-Output "ERR|$lastError"
+        ''').trim()
+        if (out != 'OK') {
+            error("Handshake: could not set postgres_db.status=${status} in ${env.HANDSHAKE_FILE}: ${out}")
+        }
+        echo "Handshake: postgres_db.status = ${status}"
+    }
+}
+
+// True when Trax is idle/completed and regression tests are idle/completed/failed.
+// An unreadable file counts as not clear.
+def handshakeClear() {
+    def h = readHandshake()
+    if (h == null) {
+        return false
+    }
+    def traxClear       = h.trax in ['idle', 'completed']
+    def regressionClear = h.regression in ['idle', 'completed', 'failed']
+    echo "Handshake: trax.status=${h.trax ?: '(none)'}${traxClear ? '' : ' (busy)'}, regression_tests.status=${h.regression ?: '(none)'}${regressionClear ? '' : ' (busy)'}"
+    return traxClear && regressionClear
+}
+
+// Claims the database: waits until the other two are clear, sets postgres_db.status to
+// "running", then checks again. The file has no lock, so Trax or the regression script
+// can pass its own check in the seconds between our read and our write - the second
+// check catches that, and we back off (back to "idle") rather than run alongside it.
+// The pause before it gives a script that checked at the same moment time to write.
+// Re-checks every HANDSHAKE_POLL_MIN minutes for up to HANDSHAKE_MAX_WAIT_MIN.
+// Returns true once claimed, false if it never cleared in time.
+def acquireHandshake() {
+    def pollMin    = env.HANDSHAKE_POLL_MIN as int
+    def maxWaitMin = env.HANDSHAKE_MAX_WAIT_MIN as int
+    def waitedMin  = 0
+    while (true) {
+        if (handshakeClear()) {
+            setPostgresDbStatus('running')
+            env.HANDSHAKE_CLAIMED = 'true'
+            sleep(time: 15, unit: 'SECONDS')
+            if (handshakeClear()) {
+                return true
+            }
+            echo 'Handshake: another script started at the same moment - backing off'
+            setPostgresDbStatus('idle')
+            env.HANDSHAKE_CLAIMED = 'false'
+        }
+        if (waitedMin >= maxWaitMin) {
+            return false
+        }
+        echo "Handshake: waiting ${pollMin} min before checking again (${waitedMin}/${maxWaitMin} min waited)"
+        sleep(time: pollMin, unit: 'MINUTES')
+        waitedMin += pollMin
+    }
+}
+
+// While we hold "running", waits for the other two to be clear again. Used right
+// before the first install, in case one of them started during the 30-minute warning
+// anyway. Same polling and limit as acquireHandshake().
+def waitForHandshakeClear() {
+    def pollMin    = env.HANDSHAKE_POLL_MIN as int
+    def maxWaitMin = env.HANDSHAKE_MAX_WAIT_MIN as int
+    def waitedMin  = 0
+    while (!handshakeClear()) {
+        if (waitedMin >= maxWaitMin) {
+            return false
+        }
+        echo "Handshake: waiting ${pollMin} min before checking again (${waitedMin}/${maxWaitMin} min waited)"
+        sleep(time: pollMin, unit: 'MINUTES')
+        waitedMin += pollMin
+    }
+    return true
 }
 
 pipeline {
@@ -1267,37 +1510,34 @@ pipeline {
         string(
             name: 'TARGET_VMS',
             defaultValue: 'SVR3-009-SEC,DCXA-004-SEC,DCX2-004-SEC,DCX3-004-SEC,SVR5-004-SEC,SVR4-004-SEC,DCX1-004-SEC,DCXC-004-SEC',
-            description: 'Comma-separated VM names to process. The scheduled build (every 2 hours) uses this default value, so keep it narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
+            description: 'Comma-separated VM names to process. This is currently a manual-only pipeline (no schedule) - keep this default narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
         )
         string(
             name: 'INSTALLER_FILE',
             defaultValue: '',
-            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank on the scheduled run - it auto-detects the newest installer under INSTALLER_DIR.'
+            description: 'Exact installer file name to force, e.g. "SOFTW-01442-00 - IBIS Database 6.1.0.06.exe". Takes precedence over INSTALLER_VERSION, and is the only way to target a hotfix unambiguously. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
         )
         string(
             name: 'INSTALLER_VERSION',
             defaultValue: '',
-            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank on the scheduled run - it auto-detects the newest installer under INSTALLER_DIR.'
+            description: 'Installer build to force, e.g. 6.1.0.06, matched as *<version>*.exe. Used when no exact file name is given. Leave blank to auto-detect the newest installer under INSTALLER_DIR.'
         )
         booleanParam(
             name: 'DRY_RUN',
             defaultValue: false,
-            description: 'Run every pre-check but skip the installer. The scheduled run executes with this false (live) by default - set true only to validate a change without touching a database.'
+            description: 'Run every pre-check but skip the installer. Set true to validate a change without touching a database.'
         )
     }
 
     options {
-        // A manually triggered run must never stack on top of the scheduled one still in progress.
+        // A second manual run must never stack on top of one still in progress.
         disableConcurrentBuilds()
         timeout(time: 4, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
     }
 
-    triggers {
-        // Poll the DBA share (via the Y: mapping) every 2 hours for a new installer. 'H'
-        // spreads the actual minute to avoid a thundering herd of jobs all firing at :00.
-        cron('H */2 * * *')
-    }
+    // Manual-only for now, deliberately no cron trigger - run by hand (e.g. "Build Now")
+    // until the PG install-hang issue on older-engine VMs is sorted out.
 
     environment {
         DB_PORT             = '1815'
@@ -1318,6 +1558,12 @@ pipeline {
         // release notes sit directly in this folder, e.g.
         // "Y:\PG Intaller\SOFTW-01398-xx PostgreSQL 17 Installer vx.x.x.x.exe".
         PG_INSTALLER_DIR    = 'Y:\\PG Intaller'
+        // Shared state file with the Trax install and regression-test scripts, on this
+        // Jenkins host. postgres_db.status is set to "running" for the whole upgrade and
+        // back to "idle" when the build ends; see waitForHandshakeClear().
+        HANDSHAKE_FILE         = 'C:\\Users\\Public\\Automation_Handshake\\Handshakes.json'
+        HANDSHAKE_POLL_MIN     = '10'
+        HANDSHAKE_MAX_WAIT_MIN = '120'
     }
 
     stages {
@@ -1384,8 +1630,8 @@ pipeline {
                     echo "Mode: ${params.DRY_RUN ? 'DRY_RUN - installer will be skipped' : 'LIVE upgrade'}"
                     echo "Targeting ${vms.size()} of ${allVms.size()} VM(s): ${vms.collect { it.name }.join(', ')}"
 
-                    // Which installer to apply. An explicit param forces a specific one; the
-                    // scheduled run passes neither and auto-detects whatever is newest.
+                    // Which installer to apply. An explicit param forces a specific one; leaving
+                    // both blank auto-detects whatever is newest.
                     def wantedFile    = (params.INSTALLER_FILE ?: '').trim()
                     def wantedVersion = (params.INSTALLER_VERSION ?: '').trim()
                     def autoDetect    = !wantedFile && !wantedVersion
@@ -1403,7 +1649,7 @@ pipeline {
                     """).trim()
                     if (!resolved) {
                         if (autoDetect) {
-                            // Routine outcome of the scheduled check, not a failure - just nothing new yet.
+                            // Routine outcome when nothing is staged, not a failure.
                             echo "No installer found under ${env.INSTALLER_DIR} (\\\\10.140.6.15\\public\\IBIS Database) - nothing to do this run."
                             return
                         }
@@ -1454,36 +1700,6 @@ pipeline {
 
                     def results = []
 
-                    stage('Pre-upgrade check') {
-                        // A DRY_RUN never actually installs anything, so a "will start in N
-                        // minutes" warning followed by a real wait would be misleading and just
-                        // waste time on a validation-only run - skip the whole check.
-                        if (params.DRY_RUN) {
-                            echo 'DRY_RUN: skipping the pre-upgrade warning and wait.'
-                        } else {
-                            // Lightweight check only - which target VMs are actually behind the
-                            // staged build. Skips the warning and wait entirely when nothing is behind.
-                            def vmsNeedingUpgrade = []
-                            def fromBuilds = []
-                            for (vm in vms) {
-                                def check = checkNeedsUpgrade(vm.name)
-                                if (check.reachable && check.needsUpgrade) {
-                                    vmsNeedingUpgrade << vm.name
-                                    fromBuilds << check.currentBuild
-                                }
-                            }
-
-                            if (vmsNeedingUpgrade) {
-                                def fromLabel = fromBuilds.unique().sort().join('/')
-                                sendPreUpgradeWarning(vmsNeedingUpgrade, fromLabel, env.INSTALLER_LABEL)
-                                echo "Upgrade needed on: ${vmsNeedingUpgrade.join(', ')} - waiting 30 minutes before starting"
-                                sleep(time: 30, unit: 'MINUTES')
-                            } else {
-                                echo 'No target VM is behind the staged build - skipping the pre-upgrade warning and wait.'
-                            }
-                        }
-                    }
-
                     // Order matters: CS (SVR*) must succeed before LIR (DCXA*/DCXB*/DCXC*), and LIR before the plain DCX group.
                     def phases = [
                         [label: 'CS',  vms: vms.findAll { classifyGroup(it.name) == 'CS' },  gate: true],
@@ -1491,9 +1707,58 @@ pipeline {
                         [label: 'DCX', vms: vms.findAll { classifyGroup(it.name) == 'DCX' }, gate: false]
                     ]
 
+                    env.VMS_TO_UPGRADE = ''
                     try {
+                        stage('Pre-upgrade check') {
+                            // A DRY_RUN never actually installs anything, so a "starts in 30
+                            // minutes" warning followed by a real wait would be misleading and just
+                            // waste time on a validation-only run - skip the whole check.
+                            if (params.DRY_RUN) {
+                                echo 'DRY_RUN: skipping the pre-upgrade warning and wait.'
+                            } else {
+                                // Lightweight check only - which target VMs are behind on the DB
+                                // build and/or the PostgreSQL engine. Skips the warning and wait
+                                // entirely when nothing is behind.
+                                def behind = []
+                                for (vm in vms) {
+                                    def check = checkNeedsUpgrade(vm.name, pgUpgradeAvailable)
+                                    if (!check.reachable) {
+                                        echo "Pre-upgrade check: ${vm.name} unreachable - not listed; processVm will report it"
+                                    } else if (check.needsUpgrade) {
+                                        behind << (check + [name: vm.name])
+                                    }
+                                }
+                                // Handshake: don't touch any database while a Trax install or a
+                                // regression run is in progress. Claimed before the 30-minute
+                                // warning so nobody is told an upgrade is coming that then can't run.
+                                if (behind && !acquireHandshake()) {
+                                    echo "Handshake: Trax and/or regression tests still busy after ${env.HANDSHAKE_MAX_WAIT_MIN} min - not upgrading this run"
+                                    env.HANDSHAKE_BLOCKED = 'true'
+                                    currentBuild.result = 'NOT_BUILT'
+                                    behind = []
+                                }
+                                env.VMS_TO_UPGRADE = behind.collect { it.name }.join(',')
+
+                                if (behind) {
+                                    sendPreUpgradeWarning(behind, pgUpgradeAvailable)
+                                    echo "Upgrade needed on: ${env.VMS_TO_UPGRADE.replace(',', ', ')} - waiting 30 minutes before starting"
+                                    sleep(time: 30, unit: 'MINUTES')
+                                    // Last check before the first install: "running" has been in the file
+                                    // for 30 minutes by now, but if Trax or regression tests started anyway,
+                                    // wait for them rather than install alongside them.
+                                    if (!waitForHandshakeClear()) {
+                                        echo "Handshake: Trax and/or regression tests became busy during the warning and were still busy after ${env.HANDSHAKE_MAX_WAIT_MIN} min - not upgrading this run"
+                                        env.HANDSHAKE_BLOCKED = 'true'
+                                        currentBuild.result = 'NOT_BUILT'
+                                    }
+                                } else if (env.HANDSHAKE_BLOCKED != 'true') {
+                                    echo 'No target VM is behind - skipping the pre-upgrade warning and wait.'
+                                }
+                            }
+                        }
+
                         for (phase in phases) {
-                            if (phase.vms.isEmpty()) {
+                            if (phase.vms.isEmpty() || env.HANDSHAKE_BLOCKED == 'true') {
                                 continue
                             }
 
@@ -1612,6 +1877,24 @@ pipeline {
                     }
 
                     sendRegressionResultNotification(regressionResults)
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Hand the database back once everything here is done with it, including the
+                // Regression Tests stage above - on success, failure and abort alike. Only if
+                // this build set it to "running" in the first place.
+                if (env.HANDSHAKE_CLAIMED == 'true') {
+                    try {
+                        setPostgresDbStatus('idle')
+                    } catch (Exception e) {
+                        echo "WARNING: ${e.getMessage()} - postgres_db.status is still \"running\" and must be reset to \"idle\" by hand, or Trax and regression tests stay blocked."
+                        currentBuild.result = 'FAILURE'
+                    }
                 }
             }
         }
