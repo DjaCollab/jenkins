@@ -1717,6 +1717,134 @@ def runDbIntegrityScan(String host) {
     return [passed: true, summary: 'passed']
 }
 
+// Which VM this job's DB Integrity Scan is on right now, if any - so a build that has to
+// wait for this one can say why. One file per job (PGUP and its test job don't share it),
+// in C:\Temp on the Jenkins host - outside the workspace, since a waiting build runs in a
+// different one.
+def scanStatusFile() {
+    return "C:\\Temp\\${env.JOB_NAME}_dbscan_running.txt"
+}
+
+def markScanRunning(String host) {
+    withEnv(["SCAN_STATUS_FILE=${scanStatusFile()}", "SCAN_HOST=${host}"]) {
+        powershell(script: '''
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:SCAN_STATUS_FILE) | Out-Null
+            Set-Content -LiteralPath $env:SCAN_STATUS_FILE -Encoding ASCII -Value ('{0}|{1}|{2}' -f $env:BUILD_NUMBER, $env:SCAN_HOST, (Get-Date -Format 'yyyy-MM-dd HH:mm'))
+        ''')
+    }
+}
+
+// Removes the status file - only if this build wrote it.
+def clearScanStatus() {
+    withEnv(["SCAN_STATUS_FILE=${scanStatusFile()}"]) {
+        powershell(script: '''
+            if (Test-Path -LiteralPath $env:SCAN_STATUS_FILE) {
+                $line = Get-Content -LiteralPath $env:SCAN_STATUS_FILE -TotalCount 1
+                if ("$line".StartsWith("$($env:BUILD_NUMBER)|")) {
+                    Remove-Item -LiteralPath $env:SCAN_STATUS_FILE -Force -ErrorAction SilentlyContinue
+                }
+            }
+        ''')
+    }
+}
+
+// "DB Integrity Scan on <VM> (since <time>)" when build #number is in its scan, else null.
+def scanStatusOf(int number) {
+    def line = ''
+    withEnv(["SCAN_STATUS_FILE=${scanStatusFile()}"]) {
+        line = powershell(returnStdout: true, script: '''
+            if (Test-Path -LiteralPath $env:SCAN_STATUS_FILE) { Get-Content -LiteralPath $env:SCAN_STATUS_FILE -TotalCount 1 }
+        ''').trim()
+    }
+    def parts = line.split('\\|', -1)
+    if (parts.size() == 3 && parts[0] == "${number}") {
+        return "DB Integrity Scan on ${parts[1]} (since ${parts[2]})"
+    }
+    return null
+}
+
+// Sent once when a build has to wait for the previous one to finish.
+def sendPostponedNotification(int previousNumber, String what) {
+    def card = """{
+    "type": "message",
+    "attachments": [
+        {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                    {
+                        "type": "TextBlock",
+                        "text": "⏸️ IBIS upgrade run postponed",
+                        "size": "Large",
+                        "weight": "Bolder",
+                        "color": "warning",
+                        "wrap": true
+                    },
+                    {
+                        "type": "TextBlock",
+                        "text": "${jsonEscape(env.TRIGGER_CAUSE)} • it will start as soon as the previous run finishes",
+                        "isSubtle": true,
+                        "wrap": true
+                    },
+                    {
+                        "type": "FactSet",
+                        "facts": [
+                            {"title": "Still running", "value": "Build #${previousNumber} - ${jsonEscape(what)}"},
+                            {"title": "Checks again", "value": "every ${env.PREVIOUS_RUN_POLL_MIN} min, for up to ${(env.PREVIOUS_RUN_MAX_WAIT_MIN as int) / 60} h"}
+                        ]
+                    }
+                ],
+                "actions": [
+                    {
+                        "type": "Action.OpenUrl",
+                        "title": "View build",
+                        "url": "${env.BUILD_URL}"
+                    }
+                ]
+            }
+        }
+    ]
+}"""
+    writeFile file: 'teams_card_postponed.json', text: card, encoding: 'UTF-8'
+    postTeamsCard('teams_card_postponed.json', 'postponed notification')
+}
+
+// First stage of every build: never run alongside the previous build of this job (e.g. a
+// DB Integrity Scan that ran past the next scheduled time). Waits for it, with one Teams
+// card saying why, re-checking every PREVIOUS_RUN_POLL_MIN minutes for up to
+// PREVIOUS_RUN_MAX_WAIT_MIN; still running after that -> this build stops without doing anything.
+def waitForPreviousRun() {
+    def previous = currentBuild.previousBuildInProgress
+    if (previous == null) {
+        return
+    }
+    def trigger = 'unknown'
+    try {
+        trigger = currentBuild.getBuildCauses().collect { it.shortDescription }.join(', ')
+    } catch (Exception ignored) { }
+    env.TRIGGER_CAUSE = trigger
+
+    def what = scanStatusOf(previous.number) ?: 'upgrade in progress'
+    echo "Build #${previous.number} is still running (${what}) - postponing this run until it finishes"
+    sendPostponedNotification(previous.number, what)
+
+    def pollMin    = env.PREVIOUS_RUN_POLL_MIN as int
+    def maxWaitMin = env.PREVIOUS_RUN_MAX_WAIT_MIN as int
+    def waitedMin  = 0
+    while (currentBuild.previousBuildInProgress != null) {
+        if (waitedMin >= maxWaitMin) {
+            error("Build #${currentBuild.previousBuildInProgress.number} still running after ${maxWaitMin} min - not starting this run")
+        }
+        sleep(time: pollMin, unit: 'MINUTES')
+        waitedMin += pollMin
+        echo "Still waiting for build #${previous.number} (${waitedMin} min so far)"
+    }
+    echo "Build #${previous.number} finished after ${waitedMin} min of waiting - starting this run"
+}
+
 // Automation handshake (HANDSHAKE_FILE) - shared with the Trax install script and the
 // regression-test script. This pipeline owns only postgres_db.status ("idle"/"running")
 // and only reads trax.status and regression_tests.status.
@@ -1863,16 +1991,18 @@ pipeline {
     }
 
     options {
-        // A run (scheduled or manual) must never stack on top of one still in progress -
-        // a run that is still going when the next 5-hour slot comes up just delays it.
-        disableConcurrentBuilds()
-        timeout(time: 4, unit: 'HOURS')
+        // No disableConcurrentBuilds(): a build queued behind a running one runs no code, so it
+        // could not tell anyone it is waiting. Instead each build's first stage waits for the
+        // previous one itself (waitForPreviousRun) and sends a Teams card when it has to - two
+        // builds still never do any work at the same time. The time limits are per stage
+        // (Upgrade VMs, Regression Tests) so that wait doesn't count against them.
         buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
     }
 
-    // Every 5 hours, with the parameter defaults (live upgrade of TARGET_VMS) - 1 hour more
-    // than the 4-hour build timeout, so a run always ends before the next one is due. Cron
-    // restarts the count at midnight: 00, 05, 10, 15, 20h, so the 20h -> 00h gap is 4 hours.
+    // Every 5 hours, with the parameter defaults (live upgrade of TARGET_VMS). If the previous
+    // run is still going (typically a long DB Integrity Scan), the new one waits for it and
+    // says so in Teams - see waitForPreviousRun(). Cron restarts the count at midnight:
+    // 00, 05, 10, 15, 20h, so the 20h -> 00h gap is 4 hours.
     // H picks a fixed minute for this job so it doesn't fire at exactly :00 with every other job.
     triggers {
         cron('H */5 * * *')
@@ -1903,9 +2033,20 @@ pipeline {
         HANDSHAKE_FILE         = 'C:\\Users\\Public\\Automation_Handshake\\Handshakes.json'
         HANDSHAKE_POLL_MIN     = '10'
         HANDSHAKE_MAX_WAIT_MIN = '120'
+        // How long a build waits for the previous one still running (waitForPreviousRun) -
+        // 10 h covers the longest the previous build can take (4 h upgrade + 6 h regression).
+        PREVIOUS_RUN_POLL_MIN     = '5'
+        PREVIOUS_RUN_MAX_WAIT_MIN = '600'
     }
 
     stages {
+        stage('Wait for previous run') {
+            steps {
+                script {
+                    waitForPreviousRun()
+                }
+            }
+        }
         stage('Ensure installer drive mapped') {
             steps {
                 script {
@@ -1925,6 +2066,10 @@ pipeline {
             }
         }
         stage('Upgrade VMs') {
+            options {
+                // Same 4 h the whole build used to have.
+                timeout(time: 4, unit: 'HOURS')
+            }
             steps {
                 script {
                     // Authoritative registry of every VM and its installer overrides.
@@ -2160,6 +2305,10 @@ pipeline {
             }
         }
         stage('Regression Tests') {
+            options {
+                // One DB Integrity Scan can take 1-2 h per VM (a large partition due).
+                timeout(time: 6, unit: 'HOURS')
+            }
             steps {
                 script {
                     // Per regression.txt:
@@ -2178,6 +2327,7 @@ pipeline {
                     echo "Regression starting for: ${upgradedVms.join(', ')}"
                     def regressionResults = []
                     for (host in upgradedVms) {
+                        markScanRunning(host)
                         def r = runDbIntegrityScan(host)
                         if (!r.passed) {
                             currentBuild.result = 'FAILURE'
@@ -2185,6 +2335,7 @@ pipeline {
                         regressionResults << [host: host, passed: r.passed, summary: r.summary]
                     }
 
+                    clearScanStatus()
                     sendRegressionResultNotification(regressionResults)
                 }
             }
@@ -2194,6 +2345,12 @@ pipeline {
     post {
         always {
             script {
+                // A failed or aborted scan must not leave its status file behind.
+                try {
+                    clearScanStatus()
+                } catch (Exception e) {
+                    echo "Could not clear the scan status file: ${e.getMessage()}"
+                }
                 // Hand the database back once everything here is done with it, including the
                 // Regression Tests stage above - on success, failure and abort alike. Only if
                 // this build set it to "running" in the first place.
