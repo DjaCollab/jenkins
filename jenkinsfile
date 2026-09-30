@@ -1380,7 +1380,7 @@ def sendRegressionResultNotification(regressionResults) {
     def summaryText = failedResults.isEmpty() ? 'Regression tests passed' : 'Regression tests FAILED'
 
     def vmFacts = regressionResults.collect { r ->
-        def value = r.passed ? 'passed' : "FAILED - ${checkconFailingLines(r.output)}"
+        def value = r.passed ? 'passed' : "FAILED - ${r.summary}"
         """{"title": "${jsonEscape(r.host)}", "value": "${jsonEscape(value)}"}"""
     }.join(',\n')
 
@@ -1430,18 +1430,30 @@ def sendRegressionResultNotification(regressionResults) {
     postTeamsCard('teams_card_regression_result.json', 'regression-result notification')
 }
 
-// The lines of a checkcon() output that report a problem, joined for a one-line card
-// value - a line counts as fine when it contains one of the "check passed" markers.
-// Falls back to the whole output when no single line stands out (e.g. a line is missing).
+// The exact text checkcon() prints for each check that passes.
 @NonCPS
-def checkconFailingLines(String output) {
-    def passMarkers = [
+def checkconPassMarkers() {
+    return [
         '0 disabled trigger found',
         '0 disabled constraint(s) found',
         'materialized view(s) refreshed',
         'Images and signatures partition definitions are compliant.',
         'Table scan_partitions is compliant.'
     ]
+}
+
+// True when every check reports as passed in a checkcon() output.
+@NonCPS
+def checkconPassed(String output) {
+    return checkconPassMarkers().every { (output ?: '').contains(it) }
+}
+
+// The lines of a checkcon() output that report a problem, joined for a one-line card
+// value - a line counts as fine when it contains one of the "check passed" markers.
+// Falls back to the whole output when no single line stands out (e.g. a line is missing).
+@NonCPS
+def checkconFailingLines(String output) {
+    def passMarkers = checkconPassMarkers()
     def lines = (output ?: '').readLines().collect { it.trim() }.findAll { it }
     def failing = lines.findAll { line -> !passMarkers.any { line.contains(it) } }
     return (failing ?: lines).join(' / ') ?: '(no output)'
@@ -1490,6 +1502,219 @@ def collectCheckconNotes(results) {
         writeFile file: stateFile, text: notified.collect { k, v -> "${k}=${v}" }.join('\n')
     }
     return [notes: notes, fresh: fresh]
+}
+
+// Copy of "DB Integrity Scan\DBScan.sql" (IBD-1273 version, pg_maintain - no set_user_u
+// escalation), embedded because this job has no checkout of the repo. Refresh it from that
+// file when the scan script changes.
+@NonCPS
+def dbScanSql() {
+    return """-- *******************************************************************************
+-- * NAME: DBScan.sql
+-- *
+-- * PURPOSE: SQL script called by DBScan_body.cmd
+-- *          Script looks for configured partitions that need to be scanned.
+-- *          Default configuration is partitions are split in two groups scanned
+-- *          every two weeks to accelerate DBScan.
+-- *
+-- *          Creates a dynamique sql script called partscan.sql and runs it.
+-- *          Unfortuantely we cannot run a VACUUM through a function:
+-- *          ERROR:  VACUUM cannot be executed from a function
+-- *          Also cannot run vacuum inside a transction bloc (\\gexec):
+-- *          ERROR:  VACUUM cannot run inside a transaction block
+-- *
+-- * CREATED: 09-SEP-16 by YC, version 6.0.0
+-- *
+-- * MODIFICATION HISTORY:
+-- *      1. IBD-743 Use a less powerful user than the postgres superuser to run the scheduled tasks.
+-- *         - Escalate to ibislx to be able to vacuum tables. Only table owner or superuser can vacuum tables.
+-- *      2. 11-JUL-2025 by JML, version 6.0.0
+-- *         IBD-1273 Grant pg_maintain (predefined role available in PG17) to ft_tasks instead of the ibis role to analyze and vacuum ibis tables
+-- *         - No longer need escalate privs to set_user_u(postgres)
+-- *         - pg_maintain available with PG17
+-- *******************************************************************************
+set statement_timeout=0;
+SELECT current_schema() ibis_schema \\gset
+SELECT current_date as today \\gset
+
+--Save last_vacuum timestamp of partitions to be scanned.
+--If last_vacuum does not change, it means an error has occured during scan.
+CREATE TEMP TABLE vacuum_timestamps AS
+SELECT sp.partname, COALESCE(psut.last_vacuum, current_date::TIMESTAMP) as last_vacuum FROM scan_partitions sp,
+              pg_stat_user_tables psut
+WHERE (sp.next_run_date < current_date OR (sp.next_run_date >= current_date AND EXTRACT(WEEK FROM sp.next_run_date) = EXTRACT(WEEK FROM now())))
+  AND sp.partname = psut.relname
+  AND status <>'I';
+
+--Get selected scan type
+SELECT
+    EXISTS(SELECT 1 WHERE :'scantype' = 'full') as is_full,
+    EXISTS(SELECT 1 WHERE :'scantype' = 'differential') as is_diff
+\\gset
+
+SELECT
+    NOT EXISTS(SELECT 1 FROM scan_partitions WHERE (next_run_date < current_date OR (next_run_date >= current_date AND EXTRACT(WEEK FROM next_run_date) = EXTRACT(WEEK FROM now()))) AND status <> 'I') nothing2vacuum,
+        EXISTS(SELECT 1 FROM scan_partitions WHERE (next_run_date < current_date OR (next_run_date >= current_date AND EXTRACT(WEEK FROM next_run_date) = EXTRACT(WEEK FROM now()))) AND status <> 'I') something2vacuum
+\\gset
+
+--If next_run_date <= current_date, vacuum partition(s)
+\\if :something2vacuum
+   \\pset tuples_only
+   --Give WARNING if next_run_date of any partition is before current date.
+   SELECT 'WARNING: Next_run_date before '||current_date||' for partition '||partname||'. It will be vacuumed, check configuration in scan_partitions table.' FROM scan_partitions WHERE next_run_date < current_date AND status <> 'I';
+   \\a
+   \\o :scanfile
+   --Full scan requested.
+   \\if :is_full
+      \\echo :scantype scan requested.
+   SELECT '\\echo Vacuuming '||partname||E'\\n'||
+          'SELECT now() timestamp_2 \\gset'||E'\\n'||
+          'UPDATE scan_partitions set status = ''P'' WHERE partname = '''||partname||''';'||E'\\n'||
+          'vacuum (verbose, disable_page_skipping, analyze) '||partname||';'||E'\\n'||
+          --Give postgres time to update pg_stat_user_tables.
+          'select pg_sleep(5);'||E'\\n'||
+          --Successful (S) if last_vacuum date from pg_stat_user_tables the same as last_run_time + duration_time
+          'UPDATE scan_partitions sp set status = ''S'','||E'\\n'||
+               --Use mod to find out in which week sequence next_run_date is at to stay in same alternating week.
+          '      next_run_date = CASE WHEN mod(EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date),2) = 1 '||E'\\n'||
+          '      THEN (SELECT * FROM generate_series(next_run_date + 1 + (((EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date)) * 7)::TEXT||'' days'')::INTERVAL, next_run_date + 7 + (((EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date)) * 7)::TEXT||'' days'')::INTERVAL, ''1 day'')  as s(a) WHERE (select EXTRACT(ISODOW FROM s.a)) = ''7'')'||E'\\n'||
+          '      ELSE (SELECT * FROM generate_series(next_run_date + ('||scan_interval||' * 7) - 6 + (((EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date)) * 7)::TEXT||'' days'')::INTERVAL, next_run_date + ('||scan_interval||' * 7) + (((EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date)) * 7)::TEXT||'' days'')::INTERVAL, ''1 day'')  as s(a) WHERE (select EXTRACT(ISODOW FROM s.a)) = ''7'')'||E'\\n'||
+          '      END, last_run_time = now(), duration_time = (now() -:''timestamp_2'')::INTERVAL(3) '||E'\\n'||
+          ' WHERE EXISTS (SELECT relname FROM pg_stat_user_tables psut, vacuum_timestamps vt WHERE psut.relname = '''||partname||''' AND psut.relname = vt.partname AND psut.last_vacuum > vt.last_vacuum'||E'\\n'||
+          '   AND psut.relname = sp.partname AND schemaname = :''ibis_schema'');'||E'\\n'||
+          --Failed (F) if last_vacuum date from pg_stat_user_tables NOT the same as last_run_time + duration_time
+          'UPDATE scan_partitions sp set last_run_time = now(), status = ''F'', duration_time = (now() -:''timestamp_2'')::INTERVAL(3) '||E'\\n'||
+          ' WHERE EXISTS (SELECT relname FROM pg_stat_user_tables psut, vacuum_timestamps vt WHERE psut.relname = '''||partname||''' AND psut.relname = vt.partname AND psut.last_vacuum = vt.last_vacuum'||E'\\n'||
+          '   AND psut.relname = sp.partname AND schemaname = :''ibis_schema'');'
+     FROM scan_partitions
+    WHERE (next_run_date < current_date OR (next_run_date >= current_date AND EXTRACT(WEEK FROM next_run_date) = EXTRACT(WEEK FROM now())))
+      AND status <> 'I';
+   \\endif
+   --Differential scan requested.
+   \\if :is_diff
+      \\echo :scantype scan requested.
+   SELECT '\\echo Vacuuming '||partname||E'\\n'||
+          'SELECT now() timestamp_2 \\gset'||E'\\n'||
+          'UPDATE scan_partitions set status = ''P'' WHERE partname = '''||partname||''';'||E'\\n'||
+          'vacuum verbose '||partname||';'||E'\\n'||
+          --Give postgres time to update pg_stat_user_tables.
+          'select pg_sleep(5);'||E'\\n'||
+          --Successful (S) if last_vacuum date from pg_stat_user_tables the same as last_run_time + duration_time
+          'UPDATE scan_partitions sp set status = ''S'','||E'\\n'||
+               --Use mod to find out in which week sequence next_run_date is at to stay in same alternating week.
+          '      next_run_date = CASE WHEN mod(EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date),2) = 1 '||E'\\n'||
+          '      THEN (SELECT * FROM generate_series(next_run_date + 1 + (((EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date)) * 7)::TEXT||'' days'')::INTERVAL, next_run_date + 7 + (((EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date)) * 7)::TEXT||'' days'')::INTERVAL, ''1 day'')  as s(a) WHERE (select EXTRACT(ISODOW FROM s.a)) = ''7'')'||E'\\n'||
+          '      ELSE (SELECT * FROM generate_series(next_run_date + ('||scan_interval||' * 7) - 6 + (((EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date)) * 7)::TEXT||'' days'')::INTERVAL, next_run_date + ('||scan_interval||' * 7) + (((EXTRACT(WEEK FROM current_date) - EXTRACT(WEEK FROM next_run_date)) * 7)::TEXT||'' days'')::INTERVAL, ''1 day'')  as s(a) WHERE (select EXTRACT(ISODOW FROM s.a)) = ''7'')'||E'\\n'||
+          '      END, last_run_time = now(), duration_time = (now() -:''timestamp_2'')::INTERVAL(3) '||E'\\n'||
+          ' WHERE EXISTS (SELECT relname FROM pg_stat_user_tables psut, vacuum_timestamps vt WHERE psut.relname = '''||partname||''' AND psut.relname = vt.partname AND psut.last_vacuum > vt.last_vacuum'||E'\\n'||
+          '   AND psut.relname = sp.partname AND schemaname = :''ibis_schema'');'||E'\\n'||
+          --Failed (F) if last_vacuum date from pg_stat_user_tables NOT the same as last_run_time + duration_time
+          'UPDATE scan_partitions sp set last_run_time = now(), status = ''F'', duration_time = (now() -:''timestamp_2'')::INTERVAL(3) '||E'\\n'||
+          ' WHERE EXISTS (SELECT relname FROM pg_stat_user_tables psut, vacuum_timestamps vt WHERE psut.relname = '''||partname||''' AND psut.relname = vt.partname AND psut.last_vacuum = vt.last_vacuum'||E'\\n'||
+          '   AND psut.relname = sp.partname AND schemaname = :''ibis_schema'');'
+     FROM scan_partitions
+    WHERE (next_run_date < current_date OR (next_run_date >= current_date AND EXTRACT(WEEK FROM next_run_date) = EXTRACT(WEEK FROM now())))
+      AND status <> 'I';
+   \\endif
+   \\o
+   \\a
+   \\pset tuples_only
+   --Wacum time... run generated file
+   \\i :scanfile
+
+--If no partitions are configured to be vacuumed on current date of execution, give warning to check configuration.
+\\else
+   \\echo WARNING: No partitions are scheduled to run today :today, check configuration in scan_partitions table.
+\\endif
+
+--Use count(*) instead of t(true) or f(false) which gives an error for no rows returned.
+SELECT COUNT(*) partition_in_error FROM scan_partitions sp, vacuum_timestamps vt  WHERE sp.status = 'F' AND sp.partname = vt.partname LIMIT 1 \\gset
+
+\\if :partition_in_error
+   SELECT * FROM scan_partitions sp, vacuum_timestamps vt  WHERE sp.status = 'F' AND sp.partname = vt.partname;
+   DO \$\$ BEGIN
+      RAISE EXCEPTION 'Some partitions failed during DB scan, consult table scan_partitions and log for details.';
+   END \$\$;
+\\endif
+
+\\set ON_ERROR_STOP 1
+--Vacuum images_compressed and signatures_ext since the are excluded in the pg_dump command because of wildcards.
+\\echo Vacuuming images_compressed
+vacuum (verbose, disable_page_skipping, analyze) images_compressed;
+\\echo Vacuuming signatures_ext
+vacuum (verbose, disable_page_skipping, analyze) signatures_ext;
+
+--If ibishits exists, vacuum images_compressed, signatures_ext, images_imported and signatures_imported ecluded from pg_dump
+\\set ibishits FALSE
+SELECT EXISTS(SELECT FROM pg_catalog.pg_namespace WHERE nspname='ibishits') ibishits \\gset
+\\if :ibishits
+   \\echo Vacuuming ibishits.images_compressed
+   vacuum (verbose, disable_page_skipping, analyze) ibishits.images_compressed;
+   \\echo Vacuuming ibishits.signatures_ext
+   vacuum (verbose, disable_page_skipping, analyze) ibishits.signatures_ext;
+   \\echo Vacuuming ibishits.images_imported
+   vacuum (verbose, disable_page_skipping, analyze) ibishits.images;
+   \\echo Vacuuming ibishits.signatures_imported
+   vacuum (verbose, disable_page_skipping, analyze) ibishits.signatures;
+\\endif
+"""
+}
+
+// Regression step 1 - the DB Integrity Scan ("DB Integrity Scan\DBScan_body.cmd") without
+// its pg_dump, run from here against one VM as dja (which has pg_maintain, so it can vacuum):
+//   a. DBScan.sql, differential: vacuums the image/signature partitions due this week per
+//      scan_partitions (and updates their status / next_run_date there, like the VM's own
+//      scheduled scan would), then images_compressed and signatures_ext - plus the ibishits
+//      tables where that schema exists - with disable_page_skipping, which reads every page
+//      and so hits any corrupted block.
+//   b. checkcon(true,true), as the scan runs it: stops with an error on any problem, with
+//      the grace period for partition errors.
+// Never the scan's haltDB.cmd: a failure is reported, the VM is not shut down.
+// Returns [passed: bool, summary: text for the regression card].
+def runDbIntegrityScan(String host) {
+    env.DB_HOST = host
+    def scanLog = "dbscan_output_${host}.txt"
+    writeFile file: 'dbscan.sql', text: dbScanSql(), encoding: 'UTF-8'
+    def scanRc
+    withEnv(["DBSCAN_LOG=${scanLog}"]) {
+        scanRc = bat(returnStatus: true, script: '''
+            set PGPASSWORD=%DB_PASSWORD%
+            psql -X -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -v scantype=differential -v scanfile=partscan.sql -f dbscan.sql > "%DBSCAN_LOG%" 2>&1
+        ''')
+    }
+    archiveArtifacts artifacts: scanLog, allowEmptyArchive: true
+    def scanOutput = readFile(scanLog).trim()
+    // VACUUM VERBOSE is long - the full output is archived, the log gets the end of it.
+    echo "DB Integrity Scan (differential) on ${host} - psql exit ${scanRc}, full output archived as ${scanLog}. Last lines:\n${scanOutput.readLines().takeRight(15).join('\n')}"
+    // DBScan.sql only turns ON_ERROR_STOP on near its end, so a failed partition scan raises
+    // an error without psql exiting non-zero - check for ERROR lines as well as the exit code.
+    def scanErrors = scanOutput.readLines().findAll { it.contains('ERROR:') }.collect { it.trim() }
+    if (scanRc != 0 || scanErrors) {
+        def why = scanErrors ? scanErrors.take(3).join(' / ') : "psql exit ${scanRc}"
+        echo "Regression FAILED on ${host}: DB Integrity Scan - ${why}"
+        return [passed: false, summary: "DB Integrity Scan failed: ${why}"]
+    }
+
+    def ccRc = bat(returnStatus: true, script: '''
+        set PGPASSWORD=%DB_PASSWORD%
+        psql -X -q -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -v ON_ERROR_STOP=1 -c "set statement_timeout=0;" -c "SELECT checkcon(true,true);" > regression_checkcon_output.txt 2>&1
+    ''')
+    def ccOutput = readFile('regression_checkcon_output.txt').trim()
+    echo "Regression checkcon(true,true) on ${host}:\n${ccOutput}"
+    if (ccRc != 0) {
+        // It stopped on an error; its WARNING/ERROR lines say what (e.g. which constraints).
+        def lines = ccOutput.readLines().findAll { it.contains('ERROR:') || it.contains('WARNING:') }.collect { it.trim() }
+        def why = lines ? lines.take(4).join(' / ') : "psql exit ${ccRc}"
+        echo "Regression FAILED on ${host}: checkcon(true,true) - ${why}"
+        return [passed: false, summary: "checkcon failed: ${why}"]
+    }
+    if (!checkconPassed(ccOutput)) {
+        def why = checkconFailingLines(ccOutput)
+        echo "Regression FAILED on ${host}: checkcon(true,true) - ${why}"
+        return [passed: false, summary: "checkcon failed: ${why}"]
+    }
+    echo "Regression passed on ${host}"
+    return [passed: true, summary: 'passed']
 }
 
 // Automation handshake (HANDSHAKE_FILE) - shared with the Trax install script and the
@@ -1936,8 +2161,8 @@ pipeline {
             steps {
                 script {
                     // Per regression.txt:
-                    //   1. db Integrity: run the checks without the pgdump - implemented below,
-                    //      re-running checkcon() against every VM actually upgraded this build.
+                    //   1. DB integrity: the DB Integrity Scan without the pg_dump - runDbIntegrityScan()
+                    //      against every VM actually upgraded this build.
                     //   2. Workflow of a case creation (correlation + hit creation) - not yet.
                     //   3. CHM - not yet.
                     def upgradedVms = (env.UPGRADED_VMS ?: '').split(',').findAll { it }
@@ -1949,43 +2174,13 @@ pipeline {
                     sendRegressionStartNotification(upgradedVms)
 
                     echo "Regression starting for: ${upgradedVms.join(', ')}"
-                    // Each key is the exact substring checkcon() prints when that check passes;
-                    // the value is what to report when it's ABSENT (i.e. the check failed).
-                    def checkDescriptions = [
-                        '0 disabled trigger found'                                : 'disabled triggers found',
-                        '0 disabled constraint(s) found'                          : 'disabled constraints found',
-                        'materialized view(s) refreshed'                          : 'materialized views not refreshed',
-                        'Images and signatures partition definitions are compliant.': 'partition definitions non-compliant',
-                        'Table scan_partitions is compliant.'                     : 'scan_partitions non-compliant'
-                    ]
                     def regressionResults = []
                     for (host in upgradedVms) {
-                        env.DB_HOST = host
-                        def rc = bat(
-                            script: '''
-                                set PGPASSWORD=%DB_PASSWORD%
-                                psql -h "%DB_HOST%" -p "%DB_PORT%" -U "%DB_USER%" -d "%DB_NAME%" -t -A -c "SELECT checkcon();" > regression_checkcon_output.txt
-                            ''',
-                            returnStatus: true
-                        )
-                        if (rc != 0) {
+                        def r = runDbIntegrityScan(host)
+                        if (!r.passed) {
                             currentBuild.result = 'FAILURE'
-                            echo "Regression FAILED on ${host}: could not run checkcon() (psql exit ${rc})"
-                            regressionResults << [host: host, passed: false, failedChecks: ["could not run checkcon() (psql exit ${rc})"], output: "could not run checkcon() (psql exit ${rc})"]
-                            continue
                         }
-
-                        def output = readFile('regression_checkcon_output.txt').trim()
-                        echo "Regression checkcon() on ${host}:\n${output}"
-                        def failedChecks = checkDescriptions.findAll { marker, label -> !output.contains(marker) }.collect { marker, label -> label }
-                        if (failedChecks) {
-                            currentBuild.result = 'FAILURE'
-                            echo "Regression FAILED on ${host}: ${failedChecks.join(', ')}"
-                            regressionResults << [host: host, passed: false, failedChecks: failedChecks, output: output]
-                        } else {
-                            echo "Regression passed on ${host}"
-                            regressionResults << [host: host, passed: true, failedChecks: []]
-                        }
+                        regressionResults << [host: host, passed: r.passed, summary: r.summary]
                     }
 
                     sendRegressionResultNotification(regressionResults)
