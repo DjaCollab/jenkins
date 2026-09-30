@@ -1843,7 +1843,7 @@ pipeline {
         string(
             name: 'TARGET_VMS',
             defaultValue: 'SVR3-009-SEC,DCXA-004-SEC,DCX2-004-SEC,DCX3-004-SEC,SVR5-004-SEC,SVR4-004-SEC,DCX1-004-SEC,DCXC-004-SEC',
-            description: 'Comma-separated VM names to process. Scheduled runs (every 4 hours) use this default. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
+            description: 'Comma-separated VM names to process. Scheduled runs (every 5 hours) use this default. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
         )
         string(
             name: 'INSTALLER_FILE',
@@ -1864,16 +1864,18 @@ pipeline {
 
     options {
         // A run (scheduled or manual) must never stack on top of one still in progress -
-        // a run that is still going when the next 4-hour slot comes up just delays it.
+        // a run that is still going when the next 5-hour slot comes up just delays it.
         disableConcurrentBuilds()
         timeout(time: 4, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
     }
 
-    // Every 4 hours, with the parameter defaults (live upgrade of TARGET_VMS). H picks a
-    // fixed minute for this job so it doesn't fire at exactly :00 with every other job.
+    // Every 5 hours, with the parameter defaults (live upgrade of TARGET_VMS) - 1 hour more
+    // than the 4-hour build timeout, so a run always ends before the next one is due. Cron
+    // restarts the count at midnight: 00, 05, 10, 15, 20h, so the 20h -> 00h gap is 4 hours.
+    // H picks a fixed minute for this job so it doesn't fire at exactly :00 with every other job.
     triggers {
-        cron('H */4 * * *')
+        cron('H */5 * * *')
     }
 
     environment {
