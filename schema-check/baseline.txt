@@ -1,0 +1,27 @@
+column missing | SITES.TOPN_DAY | N 3
+column not in dictionary | SITES.DEL_TOPN_DAY | numeric(3)
+dictionary Mandatory, DB nullable | CORR_REQUESTS.DEL_PER_UI
+dictionary Mandatory, DB nullable | CORR_REQUESTS.DEL_TIM
+dictionary Mandatory, DB nullable | CORR_REQUESTS.REV_PER_UI
+dictionary Mandatory, DB nullable | IBIS_LICENSES.EXTRA_PARAM
+dictionary Mandatory, DB nullable | SIGNATURES.VALB
+foreign key target differs | HIT_STATS.HITSTAT_FK | dictionary HITS_PK / DB hit_pk
+foreign key target differs | LAW_BROADCASTS.LAWBR_CORRQ_FK | dictionary SIT_PK / DB corrq_pk
+key columns differ | COUNTRY_BLACKLIST.COUBLK_PK | dictionary (ORI_COU_COD,FNG_COU_COD) / DB (ORI_COU_COD,FGN_COU_COD)
+key columns differ | IBIS_LICENSES.LIC_I | dictionary (SIT_COD,NAME,TYP,CLI_NAM) / DB (SIT_COD,NAM,TYP,CLI_NAM)
+key columns differ | REP_ACQUI_CTL.REPAC_UI | dictionary (SIT_COD,SRC_SIT_COD,DES_SIT_COD,COALESCE(INC_COD,'NULL')) / DB (SRC_SIT_COD,DES_SIT_COD,SIT_COD,COALESCE(INC_COD,'NULL'))
+key missing | IMAGES.IMA_POE_FK | f (SIT_COD,POE_ID)
+key missing | SIGNATURES.SIG_IMA_FK | f (SIT_COD,IMA_ID)
+key missing | SITES.SIT_I | u (SIT_COD)
+key not in dictionary | HIT_LABELS.hit_labels_pkey | p (sys_val)
+key not in dictionary | HIT_LABELS.hitl_hit_fk | f (exha_sit_cod,exha_poe_id,exhb_sit_cod,exhb_poe_id)
+key not in dictionary | REP_ACQUI_CTL.repac_des_sit_fk | f (des_sit_cod)
+key not in dictionary | REP_ACQUI_CTL.repac_sit_fk | f (sit_cod)
+key not in dictionary | REP_ACQUI_CTL.repac_src_sit_fk | f (src_sit_cod)
+type differs | HITS.DEL_USER | dictionary Text / DB character varying(20)
+type differs | TASKS.STA_COD | dictionary VC 1 / DB character(1)
+type differs | TASKS.TYP | dictionary N 14 / DB character varying(20)
+view missing | EXH_LINK_SUMMARY
+view missing | IMA
+view missing | IMC
+view missing | SIG

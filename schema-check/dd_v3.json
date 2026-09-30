@@ -1,0 +1,4978 @@
+{
+ "tables": {
+  "APPLICATION_LOGS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "ID",
+     "type": "N 20",
+     "label": "Unique Identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "APP_NAM",
+     "type": "VC 3",
+     "label": "Application Name",
+     "null": "mandatory"
+    },
+    {
+     "name": "TBL_ALI",
+     "type": "VC 6",
+     "label": "Table alias",
+     "null": "mandatory"
+    },
+    {
+     "name": "ACT_COD",
+     "type": "VC 1",
+     "label": "Action Code",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_SIT_COD",
+     "type": "VC 5",
+     "label": "Record site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_ID",
+     "type": "N 14",
+     "label": "Record Id",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXTRA",
+     "type": "VC",
+     "label": "Extra information",
+     "null": "optional"
+    },
+    {
+     "name": "TIM",
+     "type": "TSTZ 0",
+     "label": "Timestamp",
+     "null": "mandatory"
+    },
+    {
+     "name": "NOTIF",
+     "type": "VC 1",
+     "label": "Timestamp",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "APPLOG_PK",
+     "columns": [
+      "ID"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "ACQUISITION_BILLING": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Acquisition site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "POE_ID",
+     "type": "N 14",
+     "label": "Pieces of evidence identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "LIC_ID",
+     "type": "N 14",
+     "label": "IBIS license identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXH_CAT",
+     "type": "VC 3",
+     "label": "Exhibit category",
+     "null": "mandatory"
+    },
+    {
+     "name": "LAW_CAS_NUM",
+     "type": "VC 20",
+     "label": "Law case number",
+     "null": "optional"
+    },
+    {
+     "name": "EXH_REF_NUM",
+     "type": "VC 20",
+     "label": "Exhibit reference number",
+     "null": "optional"
+    },
+    {
+     "name": "ACQ_TIM",
+     "type": "TZ",
+     "label": "Acquisition time",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TZ",
+     "label": "Creation time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "BIL_PK",
+     "columns": [
+      "SIT_COD",
+      "POE_ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "BIL_LIC_FK",
+     "columns": [
+      "SIT_COD",
+      "LIC_ID"
+     ],
+     "ref": "LIC_PK"
+    }
+   ]
+  },
+  "BROADCASTS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "CORRQ_SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Broadcast identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_ID",
+     "type": "N 14",
+     "label": "Correlation request identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "SAS_SIT_COD",
+     "type": "VC 5",
+     "label": "SAS site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DAS_SIT_COD",
+     "type": "VC 5",
+     "label": "DAS site code",
+     "null": "optional"
+    },
+    {
+     "name": "SEN_TIM",
+     "type": "TSTZ 0",
+     "label": "Send time",
+     "null": "optional"
+    },
+    {
+     "name": "RCP_TIM",
+     "type": "TSTZ 0",
+     "label": "Receive time",
+     "null": "optional"
+    },
+    {
+     "name": "TES_CNT",
+     "type": "N 7",
+     "label": "Test count",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "NOR_SCO_PAR",
+     "type": "VC, TEXT",
+     "label": "Normalization score parameters",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "BRO_PK",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "BRO_UK_DAS_SIT_COD_I",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "CORRQ_ID",
+      "COALESCE(DAS_SIT_COD, SAS_SIT_COD)"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "BRO_CORRQ_FK",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "CORRQ_ID"
+     ],
+     "ref": "CORRQ_PK"
+    },
+    {
+     "kind": "f",
+     "name": "BRO_SIT_FK",
+     "columns": [
+      "SAS_SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    },
+    {
+     "kind": "f",
+     "name": "BRO_SIT_FK2",
+     "columns": [
+      "DAS_SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "CASES": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Case site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Case identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EVE_TYP",
+     "type": "VC 3",
+     "label": "Event type",
+     "null": "mandatory"
+    },
+    {
+     "name": "LAW_ORI_NUM",
+     "type": "VC 20",
+     "label": "Law ORI number",
+     "null": "mandatory"
+    },
+    {
+     "name": "LAW_CAS_NUM",
+     "type": "VC 20",
+     "label": "Law case number",
+     "null": "mandatory"
+    },
+    {
+     "name": "LAW_REF_NUM",
+     "type": "VC 20",
+     "label": "Law reference number",
+     "null": "optional"
+    },
+    {
+     "name": "OCC_DAT",
+     "type": "TSTZ 0",
+     "label": "Occurrence date",
+     "null": "mandatory"
+    },
+    {
+     "name": "HIG_PRO_TXT",
+     "type": "VC 20",
+     "label": "High profile text",
+     "null": "optional"
+    },
+    {
+     "name": "EXH_LST",
+     "type": "N 3",
+     "label": "Exhibit list",
+     "null": "mandatory"
+    },
+    {
+     "name": "HIT_IND",
+     "type": "VC 1",
+     "label": "Hit indicator",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "RST_IND",
+     "type": "VC 1",
+     "label": "Restricted indicator",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_PER_UI",
+     "type": "VC 20",
+     "label": "Creation person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_PER_UI",
+     "type": "VC 20",
+     "label": "Modification person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "SUP_PER_UI",
+     "type": "VC 20",
+     "label": "Supervisor person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "BO_STA_COD",
+     "type": "VC 1",
+     "label": "Business object status code",
+     "null": "optional"
+    },
+    {
+     "name": "SUB_COD",
+     "type": "VC 1",
+     "label": "Submission code",
+     "null": "optional"
+    },
+    {
+     "name": "AGY_CON",
+     "type": "VC 256",
+     "label": "Agency contact",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CAS_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "CAS_I",
+     "columns": [
+      "SIT_COD",
+      "LAW_CAS_NUM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "CAS_LAW_FK",
+     "columns": [
+      "LAW_ORI_NUM"
+     ],
+     "ref": "LAW_PK"
+    },
+    {
+     "kind": "f",
+     "name": "CAS_CRE_PER_FK",
+     "columns": [
+      "CRE_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "CAS_MOD_PER_FK",
+     "columns": [
+      "MOD_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "CAS_SUP_PER_FK",
+     "columns": [
+      "SUP_PER_UI"
+     ],
+     "ref": "PER_UI"
+    }
+   ]
+  },
+  "CASES_INVOLVED_IN_FOREIGN_HITS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "DES_SIT_COD",
+     "type": "VC 5",
+     "label": "Destination site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Case site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Case identifier",
+     "null": "mandatory"
+    }
+   ],
+   "keys": []
+  },
+  "COMMENTS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Comment site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Comment identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAS_ID",
+     "type": "N 14",
+     "label": "Case identifier",
+     "null": "optional"
+    },
+    {
+     "name": "POE_ID",
+     "type": "N 14",
+     "label": "Piece of evidence identifier",
+     "null": "optional"
+    },
+    {
+     "name": "FIR_ID",
+     "type": "N 14",
+     "label": "Firearm identifier",
+     "null": "optional"
+    },
+    {
+     "name": "TXT",
+     "type": "VC 2000",
+     "label": "Text",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CMT_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "CMT_CAS_FK",
+     "columns": [
+      "SIT_COD",
+      "CAS_ID"
+     ],
+     "ref": "CAS_PK"
+    },
+    {
+     "kind": "f",
+     "name": "CMT_FIR_FK",
+     "columns": [
+      "SIT_COD",
+      "FIR_ID"
+     ],
+     "ref": "FIR_PK"
+    },
+    {
+     "kind": "f",
+     "name": "CMT_POE_FK",
+     "columns": [
+      "SIT_COD",
+      "POE_ID"
+     ],
+     "ref": "POE_PK"
+    }
+   ]
+  },
+  "CORR_REQUESTS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Correlation requests identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "REF_SIT_COD",
+     "type": "VC 5",
+     "label": "Reference exhibit site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "REF_POE_ID",
+     "type": "N 14",
+     "label": "Reference exhibit identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "TYP",
+     "type": "VC 1",
+     "label": "Type",
+     "null": "mandatory"
+    },
+    {
+     "name": "EVI_CLA_COD",
+     "type": "VC 3",
+     "label": "Evidence class code",
+     "null": "mandatory"
+    },
+    {
+     "name": "LAW_CAS_NUM",
+     "type": "VC 20",
+     "label": "Law agency case number",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXH_REF_NUM",
+     "type": "VC 20",
+     "label": "Exhibit reference number",
+     "null": "mandatory"
+    },
+    {
+     "name": "REF_OCC_DAT",
+     "type": "TSTZ 0",
+     "label": "Reference exhibit occurrence date",
+     "null": "mandatory"
+    },
+    {
+     "name": "REF_EXH_CAT",
+     "type": "VC 3",
+     "label": "Reference exhibit category",
+     "null": "mandatory"
+    },
+    {
+     "name": "POE_LEA_CNT",
+     "type": "N 2",
+     "label": "LEA count",
+     "null": "conditional"
+    },
+    {
+     "name": "OCC_STR_DAT",
+     "type": "TSTZ 0",
+     "label": "Occurrence start date",
+     "null": "optional"
+    },
+    {
+     "name": "OCC_END_DAT",
+     "type": "TSTZ 0",
+     "label": "Occurrence end date",
+     "null": "optional"
+    },
+    {
+     "name": "EXH_CAT_RUL",
+     "type": "VC 6",
+     "label": "Exhibit Category rule",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAL_STR_COD",
+     "type": "N 4",
+     "label": "Caliber start family code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAL_END_COD",
+     "type": "N 4",
+     "label": "Caliber end family code",
+     "null": "conditional"
+    },
+    {
+     "name": "TWI_COD",
+     "type": "VC 1",
+     "label": "Twist code",
+     "null": "conditional"
+    },
+    {
+     "name": "LEA_CNT",
+     "type": "N 2",
+     "label": "LEA count",
+     "null": "conditional"
+    },
+    {
+     "name": "FPI_SHP_COD",
+     "type": "VC 3",
+     "label": "Firing pin shape code",
+     "null": "conditional"
+    },
+    {
+     "name": "RES_PCT",
+     "type": "N 3",
+     "label": "Result percentage",
+     "null": "mandatory"
+    },
+    {
+     "name": "RES_CNT",
+     "type": "N 3",
+     "label": "Result count",
+     "null": "mandatory"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "PRI_COD",
+     "type": "N 2",
+     "label": "Request priority code",
+     "null": "mandatory"
+    },
+    {
+     "name": "SUB_TYP",
+     "type": "VC 5",
+     "label": "Request sub-type",
+     "null": "mandatory"
+    },
+    {
+     "name": "INCL_REF_CAS_SAM",
+     "type": "VC 1",
+     "label": "Include reference case sample",
+     "null": "optional"
+    },
+    {
+     "name": "RIF_SHP_COD",
+     "type": "VC 3",
+     "label": "Rifling shape code",
+     "null": "conditional"
+    },
+    {
+     "name": "CRE_PER_UI",
+     "type": "VC 20",
+     "label": "Creation person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_PER_UI",
+     "type": "VC 20",
+     "label": "Modification person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "TF_BUF_DAY",
+     "type": "N 3",
+     "label": "Test fire buffer in days",
+     "null": "mandatory"
+    },
+    {
+     "name": "CIR_LNG",
+     "type": "N 6",
+     "label": "Circular length",
+     "null": "optional"
+    },
+    {
+     "name": "EXH_IMP",
+     "type": "VC 1",
+     "label": "Exhibit imported",
+     "null": "optional"
+    },
+    {
+     "name": "REF_CAS_ID",
+     "type": "N 14",
+     "label": "Reference case identifier",
+     "null": "conditional"
+    },
+    {
+     "name": "REV_TIM",
+     "type": "TSTZ 0",
+     "label": "Review time",
+     "null": "optional"
+    },
+    {
+     "name": "REV_PER_UI",
+     "type": "VC 20",
+     "label": "Reviewing person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "DEL_TIM",
+     "type": "TSTZ 0",
+     "label": "Review time",
+     "null": "mandatory"
+    },
+    {
+     "name": "DEL_PER_UI",
+     "type": "VC 20",
+     "label": "Reviewing person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "RM_CRI_DAY",
+     "type": "Integer",
+     "label": "Remove crime exhibit involved in a hit",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CORRQ_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "CORRQ_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    },
+    {
+     "kind": "f",
+     "name": "CORRQ_REF_SIT_FK",
+     "columns": [
+      "REF_SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "CORR_RESULTS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "CORRQ_SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_ID",
+     "type": "N 14",
+     "label": "Correlation request id",
+     "null": "mandatory"
+    },
+    {
+     "name": "POE_SIT_COD",
+     "type": "VC 5",
+     "label": "Piece of evidence site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "POE_ID",
+     "type": "N 14",
+     "label": "Piece of evidence identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "LAW_CAS_NUM",
+     "type": "VC 20",
+     "label": "Law case number",
+     "null": "optional"
+    },
+    {
+     "name": "HIG_PRO_TXT",
+     "type": "VC 20",
+     "label": "High profile text",
+     "null": "optional"
+    },
+    {
+     "name": "EXH_REF_NUM",
+     "type": "VC 20",
+     "label": "Exhibit reference number",
+     "null": "optional"
+    },
+    {
+     "name": "POE_EXH_CAT",
+     "type": "VC 3",
+     "label": "Exhibit category",
+     "null": "optional"
+    },
+    {
+     "name": "CAS_EVE_TYP",
+     "type": "VC 3",
+     "label": "Case event type",
+     "null": "optional"
+    },
+    {
+     "name": "FIR_MAK_COD",
+     "type": "VC 3",
+     "label": "Firearm make code",
+     "null": "optional"
+    },
+    {
+     "name": "FIR_MDL_DSC",
+     "type": "VC 20",
+     "label": "Firearm model description",
+     "null": "optional"
+    },
+    {
+     "name": "CAL_STR_COD",
+     "type": "VC 6",
+     "label": "Caliber start code",
+     "null": "optional"
+    },
+    {
+     "name": "LEA_CNT",
+     "type": "N 2",
+     "label": "LEA count",
+     "null": "optional"
+    },
+    {
+     "name": "LAW_ORI_NUM",
+     "type": "VC 20",
+     "label": "Law ORI number",
+     "null": "optional"
+    },
+    {
+     "name": "CAS_OCC_DAT",
+     "type": "TSTZ 0",
+     "label": "Case occurrence date",
+     "null": "optional"
+    },
+    {
+     "name": "POE_OCC_DAT",
+     "type": "TSTZ 0",
+     "label": "POE occurrence date",
+     "null": "optional"
+    },
+    {
+     "name": "CAL_END_COD",
+     "type": "VC 6",
+     "label": "Caliber end code",
+     "null": "optional"
+    },
+    {
+     "name": "TOPN_IND",
+     "type": "VC 1",
+     "label": "TopN exhibit indicator",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CORRS_PK",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "CORRQ_ID",
+      "POE_SIT_COD",
+      "POE_ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "CORRS_CORRQ_FK",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "CORRQ_ID"
+     ],
+     "ref": "CORRQ_PK"
+    },
+    {
+     "kind": "f",
+     "name": "CORRS_POE_SIT_FK",
+     "columns": [
+      "POE_SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "COUNTRY_BLACKLIST": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "ORI_COU_COD",
+     "type": "VC 2",
+     "label": "Origin country code",
+     "null": "mandatory"
+    },
+    {
+     "name": "FGN_COU_COD",
+     "type": "VC 2",
+     "label": "Foreign country code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "COUBLK_PK",
+     "columns": [
+      "ORI_COU_COD",
+      "FNG_COU_COD"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "EXPORT_XML_LOG": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "TBL_ALI",
+     "type": "VC 3",
+     "label": "Unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXT_ID",
+     "type": "N 14",
+     "label": "External identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXP_TIM",
+     "type": "TZ",
+     "label": "Exported time",
+     "null": "mandatory"
+    },
+    {
+     "name": "SEL_TIM",
+     "type": "TZ",
+     "label": "Selected Time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MAR_DEL",
+     "type": "VC 1",
+     "label": "Marked deleted",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_EXT_ID",
+     "type": "N 14",
+     "label": "Deleted external identifier",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "EXL_PK",
+     "columns": [
+      "TBL_ALI",
+      "SIT_COD",
+      "ID",
+      "EXT_ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "EXL_EXT_FK",
+     "columns": [
+      "EXT_ID"
+     ],
+     "ref": "EXT_PK"
+    }
+   ]
+  },
+  "EXPORT_XML_SITES": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Acquisition site code",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "EXS_PK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "EXS_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "EXPORT_XML_TIMESTAMPS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXP_TIM",
+     "type": "TZ",
+     "label": "Exported time",
+     "null": "mandatory"
+    },
+    {
+     "name": "SEL_TIM",
+     "type": "TZ",
+     "label": "Selected time",
+     "null": "mandatory"
+    },
+    {
+     "name": "CMT",
+     "type": "VC 30",
+     "label": "Comment",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "EXT_PK",
+     "columns": [
+      "ID"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "FIREARMS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Firearm site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Firearm identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAS_ID",
+     "type": "N 14",
+     "label": "Case identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXH_REF_NUM",
+     "type": "VC 20",
+     "label": "Exhibit reference number",
+     "null": "mandatory"
+    },
+    {
+     "name": "REG_DAT",
+     "type": "TSTZ 0",
+     "label": "Registration date",
+     "null": "optional"
+    },
+    {
+     "name": "SER_NUM",
+     "type": "VC 20",
+     "label": "Serial number",
+     "null": "optional"
+    },
+    {
+     "name": "MAK_COD",
+     "type": "VC 3",
+     "label": "Make code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAL_COD",
+     "type": "VC 6",
+     "label": "Caliber code",
+     "null": "mandatory"
+    },
+    {
+     "name": "MDL_DSC",
+     "type": "VC 20",
+     "label": "Model description",
+     "null": "optional"
+    },
+    {
+     "name": "TYP",
+     "type": "VC 2",
+     "label": "Type",
+     "null": "mandatory"
+    },
+    {
+     "name": "BAR_LNG",
+     "type": "N 6, 2",
+     "label": "Barrel length",
+     "null": "optional"
+    },
+    {
+     "name": "SHO_CAP",
+     "type": "N 4",
+     "label": "Shot capacity",
+     "null": "optional"
+    },
+    {
+     "name": "FIN_COD",
+     "type": "VC 3",
+     "label": "Finish code",
+     "null": "optional"
+    },
+    {
+     "name": "COU_ORI_COD",
+     "type": "VC 2",
+     "label": "Country of origin code",
+     "null": "optional"
+    },
+    {
+     "name": "IMP_NAM",
+     "type": "VC 40",
+     "label": "Importer name",
+     "null": "optional"
+    },
+    {
+     "name": "IMP_STE_COD",
+     "type": "VC 2",
+     "label": "Importer state code",
+     "null": "optional"
+    },
+    {
+     "name": "CRI_COD",
+     "type": "VC 4",
+     "label": "Crime code",
+     "null": "optional"
+    },
+    {
+     "name": "RCV_DAT",
+     "type": "TSTZ 0",
+     "label": "Recovery date",
+     "null": "optional"
+    },
+    {
+     "name": "RCV_CTY_NAM",
+     "type": "VC 20",
+     "label": "Recovery city name",
+     "null": "optional"
+    },
+    {
+     "name": "RCV_STE_COD",
+     "type": "VC 2",
+     "label": "Recovery state code",
+     "null": "optional"
+    },
+    {
+     "name": "PSS_LST_NAM",
+     "type": "VC 20",
+     "label": "Possessor last name",
+     "null": "optional"
+    },
+    {
+     "name": "PSS_FRS_NAM",
+     "type": "VC 15",
+     "label": "Possessor first name",
+     "null": "optional"
+    },
+    {
+     "name": "PSS_MID_NAM",
+     "type": "VC 10",
+     "label": "Possessor middle name",
+     "null": "optional"
+    },
+    {
+     "name": "OFI_LST_NAM",
+     "type": "VC 20",
+     "label": "Officer last name",
+     "null": "optional"
+    },
+    {
+     "name": "OFI_FRS_NAM",
+     "type": "VC 15",
+     "label": "Officer first name",
+     "null": "optional"
+    },
+    {
+     "name": "TRC_PRI_COD",
+     "type": "VC 1",
+     "label": "Tracing priority code",
+     "null": "mandatory"
+    },
+    {
+     "name": "TRC_REQ_IND",
+     "type": "VC 1",
+     "label": "Tracing request indicator",
+     "null": "optional"
+    },
+    {
+     "name": "TRC_SEN_DAT",
+     "type": "TSTZ 0",
+     "label": "Tracing send date",
+     "null": "optional"
+    },
+    {
+     "name": "TRC_POD_COD",
+     "type": "VC 6",
+     "label": "Tracing post of duty code",
+     "null": "optional"
+    },
+    {
+     "name": "TRC_RAC_NAM",
+     "type": "VC 20",
+     "label": "Tracing region agent in charge name",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_PER_UI",
+     "type": "VC 20",
+     "label": "Creation person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_PER_UI",
+     "type": "VC 20",
+     "label": "Modification person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "BO_STA_COD",
+     "type": "VC 1",
+     "label": "Business object status code",
+     "null": "optional"
+    },
+    {
+     "name": "EXT_REF",
+     "type": "VC 20",
+     "label": "External reference",
+     "null": "optional"
+    },
+    {
+     "name": "ERL_OCC_DAT",
+     "type": "TSTZ 0",
+     "label": "Earliest occurrence date",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "FIR_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "FIR_I",
+     "columns": [
+      "SIT_COD",
+      "CAS_ID",
+      "EXH_REF_NUM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "FIR_CAS_FK",
+     "columns": [
+      "SIT_COD",
+      "CAS_ID"
+     ],
+     "ref": "CAS_PK"
+    },
+    {
+     "kind": "f",
+     "name": "FIR_CRE_PER_FK",
+     "columns": [
+      "CRE_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "FIR_MOD_PER_FK",
+     "columns": [
+      "MOD_PER_UI"
+     ],
+     "ref": "PER_UI"
+    }
+   ]
+  },
+  "GLOBAL_PARAMS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "PARAM_GROUP",
+     "type": "Text",
+     "label": "Parameter group",
+     "null": "mandatory"
+    },
+    {
+     "name": "PARAM_NAME",
+     "type": "Text",
+     "label": "Parameter name",
+     "null": "mandatory"
+    },
+    {
+     "name": "PARAM_VALUE",
+     "type": "Text",
+     "label": "Parameter value",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "USERNAME",
+     "type": "VC 30",
+     "label": "User name",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "GLOBAL_PARAMS_PKEY",
+     "columns": [
+      "PARAM_GROUP",
+      "PARAM_NAME"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "HITS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Hit site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Hits identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXHA_SIT_COD",
+     "type": "VC 5",
+     "label": "Site code of exhibit A",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXHA_CAS_ID",
+     "type": "N 14",
+     "label": "Case identifier of exhibit A",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXHA_POE_ID",
+     "type": "N 14",
+     "label": "Exhibit identifier of exhibit A",
+     "null": "optional"
+    },
+    {
+     "name": "EXHB_SIT_COD",
+     "type": "VC 5",
+     "label": "Site code of exhibit B",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXHB_CAS_ID",
+     "type": "N 14",
+     "label": "Case identifier of exhibit B",
+     "null": "optional"
+    },
+    {
+     "name": "EXHB_POE_ID",
+     "type": "N 14",
+     "label": "Exhibit identifier of exhibit B",
+     "null": "optional"
+    },
+    {
+     "name": "TES_CAS_NUM",
+     "type": "VC 20",
+     "label": "Test exhibit law agency case number",
+     "null": "optional"
+    },
+    {
+     "name": "TES_EXH_NUM",
+     "type": "VC 20",
+     "label": "Test exhibit reference number",
+     "null": "optional"
+    },
+    {
+     "name": "REV_ORD",
+     "type": "Boolean",
+     "label": "Reversed order",
+     "null": "mandatory"
+    },
+    {
+     "name": "DISP_SET",
+     "type": "Text",
+     "label": "Display settings",
+     "null": "optional"
+    },
+    {
+     "name": "CMT",
+     "type": "VC 80",
+     "label": "Comment",
+     "null": "optional"
+    },
+    {
+     "name": "MRK",
+     "type": "Text",
+     "label": "Mark annotation",
+     "null": "optional"
+    },
+    {
+     "name": "STA_COD",
+     "type": "CHAR 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "POT_DAT",
+     "type": "TSTZ 0",
+     "label": "Potential date",
+     "null": "optional"
+    },
+    {
+     "name": "HIG_DAT",
+     "type": "TSTZ 0",
+     "label": "High-confidence date",
+     "null": "optional"
+    },
+    {
+     "name": "CON_DAT",
+     "type": "TSTZ 0",
+     "label": "Concluded date",
+     "null": "optional"
+    },
+    {
+     "name": "POT_PER_UI",
+     "type": "VC 20",
+     "label": "Potential person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "HIG_PER_UI",
+     "type": "VC 20",
+     "label": "High-confidence person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "CON_PER_UI",
+     "type": "VC 20",
+     "label": "Concluded person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_PER_UI",
+     "type": "VC 20",
+     "label": "Creation person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_PER_UI",
+     "type": "VC 20",
+     "label": "Modification person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "DEL_TIM",
+     "type": "TSTZ 0",
+     "label": "Deletion time by an IBIS user",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_PER_UI",
+     "type": "VC 20",
+     "label": "Deletion person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_USER_TIM",
+     "type": "TSTZ 0",
+     "label": "Deletion time from any source",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_USER",
+     "type": "Text",
+     "label": "Deletion database user",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_APP",
+     "type": "Text",
+     "label": "Deletion database user",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_CLI_IP",
+     "type": "Text",
+     "label": "Deletion database user",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "HIT_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "HIT_CRE_PER_FK",
+     "columns": [
+      "CRE_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "HIT_MOD_PER_FK",
+     "columns": [
+      "MOD_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "HIT_POT_PER_FK",
+     "columns": [
+      "POT_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "HIT_HIG_PER_FK",
+     "columns": [
+      "HIG_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "HIT_CON_PER_FK",
+     "columns": [
+      "CON_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "HIT_EXHA_FK",
+     "columns": [
+      "EXHA_SIT_COD",
+      "EXHA_POE_ID"
+     ],
+     "ref": "POE_PK"
+    },
+    {
+     "kind": "f",
+     "name": "HIT_EXHB_FK",
+     "columns": [
+      "EXHB_SIT_COD",
+      "EXHB_POE_ID"
+     ],
+     "ref": "POE_PK"
+    },
+    {
+     "kind": "f",
+     "name": "HIT_CASA_FK",
+     "columns": [
+      "EXHA_SIT_COD",
+      "EXHA_CAS_ID"
+     ],
+     "ref": "CAS_PK"
+    },
+    {
+     "kind": "f",
+     "name": "HIT_CASB_FK",
+     "columns": [
+      "EXHB_SIT_COD",
+      "EXHB_CAS_ID"
+     ],
+     "ref": "CAS_PK"
+    }
+   ]
+  },
+  "HITS_DELETED": {
+   "group": "Business Tables",
+   "columns": [],
+   "keys": []
+  },
+  "HIT_INDICATORS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "POE_SIT_COD",
+     "type": "VC 5",
+     "label": "Image site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "POE_ID",
+     "type": "N 14",
+     "label": "Image identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "CNT",
+     "type": "INT",
+     "label": "Image identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "HITIND_PK",
+     "columns": [
+      "POE_SIT_COD",
+      "POE_ID"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "HIT_LABELS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SYS_VAL",
+     "type": "VC 12",
+     "label": "System-generated label",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXHA_SIT_COD",
+     "type": "VC 5",
+     "label": "Image site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXHA_POE_ID",
+     "type": "N 14",
+     "label": "Image identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXHB_SIT_COD",
+     "type": "VC 5",
+     "label": "Image site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXHB_POE_ID",
+     "type": "N 14",
+     "label": "Image identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "PER_UI",
+     "type": "Text",
+     "label": "Person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "CMT",
+     "type": "VC 40",
+     "label": "User comment",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "LBL_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": []
+  },
+  "IBIS_LICENSES": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Acquisition site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Starting identifier range",
+     "null": "mandatory"
+    },
+    {
+     "name": "NAM",
+     "type": "TEXT",
+     "label": "License name",
+     "null": "mandatory"
+    },
+    {
+     "name": "TYP",
+     "type": "TEXT",
+     "label": "License type",
+     "null": "mandatory"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "License status",
+     "null": "mandatory"
+    },
+    {
+     "name": "CLI_NAM",
+     "type": "TEXT",
+     "label": "Client name",
+     "null": "optional"
+    },
+    {
+     "name": "PKG_QTY",
+     "type": "INT",
+     "label": "Package quantity",
+     "null": "optional"
+    },
+    {
+     "name": "EFF_DAT",
+     "type": "TZ",
+     "label": "Effective date",
+     "null": "optional"
+    },
+    {
+     "name": "EXP_DAT",
+     "type": "TZ",
+     "label": "Expiry date",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TZ",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TZ",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXTRA_PARAM",
+     "type": "JSONB",
+     "label": "Extra parameters",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "LIC_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "LIC_I",
+     "columns": [
+      "SIT_COD",
+      "NAME",
+      "TYP",
+      "CLI_NAM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "LIC_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "IMAGES": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Image site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Image identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "VALB",
+     "type": "Bytea",
+     "label": "Real image value",
+     "null": "optional"
+    },
+    {
+     "name": "POE_ID",
+     "type": "N 14",
+     "label": "Piece of evidence identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "TYP",
+     "type": "VC 3",
+     "label": "Type",
+     "null": "mandatory"
+    },
+    {
+     "name": "OBJ_NUM",
+     "type": "N 2",
+     "label": "Object number",
+     "null": "mandatory"
+    },
+    {
+     "name": "NUM",
+     "type": "N 2",
+     "label": "Image Number",
+     "null": "mandatory"
+    },
+    {
+     "name": "DLM_VAL",
+     "type": "Bytea 2000",
+     "label": "ROI delimiter value",
+     "null": "optional"
+    },
+    {
+     "name": "PIX_SIZ",
+     "type": "N 8,8",
+     "label": "Image pixel size",
+     "null": "mandatory"
+    },
+    {
+     "name": "ROI_SIZ",
+     "type": "N, D",
+     "label": "ROI Size",
+     "null": "conditional"
+    },
+    {
+     "name": "IMA_DEL",
+     "type": "Bytea 255",
+     "label": "Image real delimiters",
+     "null": "optional"
+    },
+    {
+     "name": "IMA_FMT",
+     "type": "VC 5",
+     "label": "Image real\u2019s format",
+     "null": "optional"
+    },
+    {
+     "name": "BO_STA_COD",
+     "type": "VC 1",
+     "label": "Business object status code",
+     "null": "optional"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Image status code",
+     "null": "optional"
+    },
+    {
+     "name": "ACQ_UNIT_ID",
+     "type": "VC 12",
+     "label": "Acquisition unit identifier",
+     "null": "optional"
+    },
+    {
+     "name": "IMA_SCAL",
+     "type": "N, D",
+     "label": "Real image scaling factor",
+     "null": "optional"
+    },
+    {
+     "name": "IMA_BPP",
+     "type": "N 2",
+     "label": "Bits-per-pixel",
+     "null": "optional"
+    },
+    {
+     "name": "IMA_CMP",
+     "type": "N 1",
+     "label": "Components per pixel",
+     "null": "optional"
+    },
+    {
+     "name": "MRK_INF",
+     "type": "VC 2000",
+     "label": "Image mark information",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "IMA_QUA",
+     "type": "VC 3",
+     "label": "Image quality",
+     "null": "optional"
+    },
+    {
+     "name": "ACQ_UNIT_VER",
+     "type": "Text",
+     "label": "Acquisition unit version",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "IMA_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "IMA_I",
+     "columns": [
+      "SIT_COD",
+      "POE_ID",
+      "TYP",
+      "OBJ_NUM",
+      "NUM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "IMA_POE_FK",
+     "columns": [
+      "SIT_COD",
+      "POE_ID"
+     ],
+     "ref": "POE_PK"
+    }
+   ]
+  },
+  "IMAGES_COMPRESSED": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Image real site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "IMA_ID",
+     "type": "N 14",
+     "label": "Image identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "IMA_WID",
+     "type": "N 4",
+     "label": "Image real width",
+     "null": "optional"
+    },
+    {
+     "name": "IMA_HGT",
+     "type": "N 6",
+     "label": "Image height",
+     "null": "optional"
+    },
+    {
+     "name": "VALB",
+     "type": "Bytea",
+     "label": "Value",
+     "null": "optional"
+    },
+    {
+     "name": "LNG",
+     "type": "N 6",
+     "label": "Length",
+     "null": "optional"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "IMC_PK",
+     "columns": [
+      "SIT_COD",
+      "IMA_ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "IMC_IMA_FK",
+     "columns": [
+      "SIT_COD",
+      "IMA_ID"
+     ],
+     "ref": "IMA_PK"
+    }
+   ]
+  },
+  "LAW_BROADCASTS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_ID",
+     "type": "N 14",
+     "label": "Correlation request identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "ACT_COD",
+     "type": "VC 1",
+     "label": "Correlation request identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "LAWSS_COD",
+     "type": "VC 20",
+     "label": "Law subset code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "LAWBR_PK",
+     "columns": [
+      "SIT_COD",
+      "CORRQ_ID",
+      "ACT_COD",
+      "LAWSS_COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "LAWBR_CORRQ_FK",
+     "columns": [
+      "SIT_COD",
+      "CORRQ_ID"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "MESSAGES": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Message site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "BIGINT",
+     "label": "Message identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "TXT",
+     "type": "JSONB",
+     "label": "Message text",
+     "null": "optional"
+    },
+    {
+     "name": "REC_SIT_COD",
+     "type": "VC 5",
+     "label": "Record site code",
+     "null": "optional"
+    },
+    {
+     "name": "CAS_ID",
+     "type": "N 14",
+     "label": "Case Id",
+     "null": "optional"
+    },
+    {
+     "name": "POE_ID",
+     "type": "N 14",
+     "label": "Exhibit Id",
+     "null": "optional"
+    },
+    {
+     "name": "TYP",
+     "type": "INT",
+     "label": "Message type",
+     "null": "mandatory"
+    },
+    {
+     "name": "ACT_COD",
+     "type": "CHAR 1",
+     "label": "ACT_COD",
+     "null": "mandatory"
+    },
+    {
+     "name": "STA_COD",
+     "type": "CHAR 1",
+     "label": "STA_COD",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "MSG_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "PERSONS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Person site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Person identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "NAM",
+     "type": "VC 30",
+     "label": "Name",
+     "null": "mandatory"
+    },
+    {
+     "name": "TIT_COD",
+     "type": "VC 3",
+     "label": "Title code",
+     "null": "optional"
+    },
+    {
+     "name": "USR_NAM",
+     "type": "VC 30",
+     "label": "Username",
+     "null": "mandatory"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "optional"
+    },
+    {
+     "name": "UI",
+     "type": "VC 20",
+     "label": "Person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "LCK_DAT",
+     "type": "TSTZ 0",
+     "label": "Account lock date",
+     "null": "optional"
+    },
+    {
+     "name": "LST_LGN_DAT",
+     "type": "TSTZ 0",
+     "label": "Last logon",
+     "null": "optional"
+    },
+    {
+     "name": "LST_PWD_CHG",
+     "type": "TSTZ 0",
+     "label": "Account last password change",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "PER_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "PER_I",
+     "columns": [
+      "SIT_COD",
+      "USR_NAM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "PER_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "PIECES_OF_EVIDENCE": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Exhibit site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Exhibit identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAS_ID",
+     "type": "N 14",
+     "label": "Case identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "EVI_CLA_COD",
+     "type": "VC 3",
+     "label": "Evidence class code",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXH_CAT",
+     "type": "VC 3",
+     "label": "Exhibit category",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXH_REF_NUM",
+     "type": "VC 20",
+     "label": "Exhibit reference number",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAL_STR_COD",
+     "type": "VC 6",
+     "label": "Caliber start code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAL_END_COD",
+     "type": "VC 6",
+     "label": "Caliber end code",
+     "null": "optional"
+    },
+    {
+     "name": "COM_COD",
+     "type": "VC 3",
+     "label": "Composition code",
+     "null": "optional"
+    },
+    {
+     "name": "TWI_COD",
+     "type": "VC 1",
+     "label": "Twist code",
+     "null": "conditional"
+    },
+    {
+     "name": "LEA_CNT",
+     "type": "N 2",
+     "label": "Land Engraved Area count",
+     "null": "conditional"
+    },
+    {
+     "name": "FPI_SHP_COD",
+     "type": "VC 3",
+     "label": "Firing pin shape code",
+     "null": "conditional"
+    },
+    {
+     "name": "MAK_COD",
+     "type": "VC 3",
+     "label": "Make code",
+     "null": "optional"
+    },
+    {
+     "name": "FIR_ID",
+     "type": "N 14",
+     "label": "Firearm identifier",
+     "null": "optional"
+    },
+    {
+     "name": "ACQ_TIM",
+     "type": "TSTZ 0",
+     "label": "Acquisition time",
+     "null": "optional"
+    },
+    {
+     "name": "COR_AUT_IND",
+     "type": "VC 1",
+     "label": "Correlation automatic indicator",
+     "null": "optional"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "RIF_SHP_COD",
+     "type": "VC 3",
+     "label": "Rifling shape code",
+     "null": "conditional"
+    },
+    {
+     "name": "BF_SHP_LST",
+     "type": "N 10",
+     "label": "Breech Face Shape List",
+     "null": "conditional"
+    },
+    {
+     "name": "CRE_PER_UI",
+     "type": "VC 20",
+     "label": "Creation person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_PER_UI",
+     "type": "VC 20",
+     "label": "Modification person unique identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "ACQ_PER_UI",
+     "type": "VC 20",
+     "label": "Acquisition person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "QC_PER_UI",
+     "type": "VC 20",
+     "label": "Quality control person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "QC_TIM",
+     "type": "TSTZ 0",
+     "label": "Quality control time",
+     "null": "optional"
+    },
+    {
+     "name": "QC_CMT",
+     "type": "VC 2000",
+     "label": "Quality control comment",
+     "null": "optional"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "DCA_COM_COD",
+     "type": "VC 3",
+     "label": "Double cast composition code",
+     "null": "optional"
+    },
+    {
+     "name": "OCC_DAT",
+     "type": "TSTZ 0",
+     "label": "Occurrence date",
+     "null": "optional"
+    },
+    {
+     "name": "IMA_REL_POS",
+     "type": "VC 2000",
+     "label": "Image relative positions",
+     "null": "optional"
+    },
+    {
+     "name": "BO_STA_COD",
+     "type": "VC 1",
+     "label": "Business object status code",
+     "null": "optional"
+    },
+    {
+     "name": "CIR_LNG",
+     "type": "N 6",
+     "label": "Circular length",
+     "null": "optional"
+    },
+    {
+     "name": "RCP_DAT",
+     "type": "TSTZ 0",
+     "label": "Received date",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "POE_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "POE_I",
+     "columns": [
+      "SIT_COD",
+      "CAS_ID",
+      "EXH_REF_NUM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "POE_CAS_FK",
+     "columns": [
+      "SIT_COD",
+      "CAS_ID"
+     ],
+     "ref": "CAS_PK"
+    },
+    {
+     "kind": "f",
+     "name": "POE_CRE_PER_FK",
+     "columns": [
+      "CRE_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "POE_MOD_PER_FK",
+     "columns": [
+      "MOD_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "POE_ACQ_PER_FK",
+     "columns": [
+      "ACQ_PER_UI"
+     ],
+     "ref": "PER_UI"
+    },
+    {
+     "kind": "f",
+     "name": "POE_QC_PER_FK",
+     "columns": [
+      "QC_PER_UI"
+     ],
+     "ref": "PER_UI"
+    }
+   ]
+  },
+  "SCORES": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "CORRQ_SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_ID",
+     "type": "N 14",
+     "label": "Correlation request id",
+     "null": "mandatory"
+    },
+    {
+     "name": "POE_SIT_COD",
+     "type": "VC 5",
+     "label": "Piece of evidence site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "POE_ID",
+     "type": "N 14",
+     "label": "Piece of evidence identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "COD",
+     "type": "VC 16",
+     "label": "Code identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "VAL",
+     "type": "N",
+     "label": "Value",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "SCO_PK",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "CORRQ_ID",
+      "POE_SIT_COD",
+      "POE_ID",
+      "COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "SCO_CORS_FK",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "CORRQ_ID",
+      "POE_SIT_COD",
+      "POE_ID"
+     ],
+     "ref": "CORRS_PK"
+    }
+   ]
+  },
+  "SIGNATURES": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Signature site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Signature identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "IMA_ID",
+     "type": "N 14",
+     "label": "Image identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "COD",
+     "type": "VC 3",
+     "label": "Code",
+     "null": "mandatory"
+    },
+    {
+     "name": "VALB",
+     "type": "Bytea",
+     "label": "Value",
+     "null": "mandatory"
+    },
+    {
+     "name": "LNG",
+     "type": "N 6",
+     "label": "Length",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "SIG_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "SIG_I",
+     "columns": [
+      "SIT_COD",
+      "IMA_ID",
+      "COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "SIG_IMA_FK",
+     "columns": [
+      "SIT_COD",
+      "IMA_ID"
+     ],
+     "ref": "IMA_PK"
+    }
+   ]
+  },
+  "SIGNATURES_EXT": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "CORRQ_SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_ID",
+     "type": "N 14",
+     "label": "Correlation request identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "IMA_TYP",
+     "type": "VC 3",
+     "label": "Image type",
+     "null": "mandatory"
+    },
+    {
+     "name": "IMA_OBJ_NUM",
+     "type": "N 2",
+     "label": "Object number",
+     "null": "mandatory"
+    },
+    {
+     "name": "IMA_NUM",
+     "type": "N 2",
+     "label": "Number",
+     "null": "mandatory"
+    },
+    {
+     "name": "COD",
+     "type": "VC 3",
+     "label": "Code",
+     "null": "mandatory"
+    },
+    {
+     "name": "VALB",
+     "type": "Bytea",
+     "label": "Value",
+     "null": "mandatory"
+    },
+    {
+     "name": "LNG",
+     "type": "N 6",
+     "label": "Length",
+     "null": "mandatory"
+    },
+    {
+     "name": "IMA_ROI_SIZ",
+     "type": "N, D",
+     "label": "Image ROI Size",
+     "null": "conditional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "SIGEX_PK",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "CORRQ_ID",
+      "IMA_TYP",
+      "IMA_OBJ_NUM",
+      "IMA_NUM",
+      "COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "SIGEX_CORRQ_FK",
+     "columns": [
+      "CORRQ_SIT_COD",
+      "CORRQ_ID"
+     ],
+     "ref": "CORRQ_PK"
+    }
+   ]
+  },
+  "SYS_PARAMS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Local site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "PRT_MSG_COD",
+     "type": "VC 3",
+     "label": "Print message code",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "PAR_PK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "PAR_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "TASKS": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "ID",
+     "type": "N 19, BIGINT",
+     "label": "Task identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_SIT_COD",
+     "type": "VC 5",
+     "label": "Record site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_ID",
+     "type": "N 14",
+     "label": "Record identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "TYP",
+     "type": "N 14",
+     "label": "Task type",
+     "null": "mandatory"
+    },
+    {
+     "name": "MSG",
+     "type": "JSONB",
+     "label": "Message",
+     "null": "optional"
+    },
+    {
+     "name": "DES_SIT_COD",
+     "type": "VC 5",
+     "label": "Destination site code",
+     "null": "optional"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "TSK_PK",
+     "columns": [
+      "ID"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "WORKING_ENGINES": {
+   "group": "Business Tables",
+   "columns": [
+    {
+     "name": "WOR_ENG_ID",
+     "type": "VC 25",
+     "label": "Working engine identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_ID",
+     "type": "N 14",
+     "label": "Correlation request identifier",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "WE_PK",
+     "columns": [
+      "WOR_ENG_ID"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "CALIBER_FAMILIES": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "POE_CAL_COD",
+     "type": "VC 6",
+     "label": "Caliber code of exhibit",
+     "null": "mandatory"
+    },
+    {
+     "name": "BUL_FAM_COD",
+     "type": "N 4",
+     "label": "Bullet family code",
+     "null": "optional"
+    },
+    {
+     "name": "CC_FAM_COD",
+     "type": "N 4",
+     "label": "Cartridge case family code",
+     "null": "optional"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "FPI_SHP_CLA",
+     "type": "VC 3",
+     "label": "Firing pin shape class",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CALF_PK",
+     "columns": [
+      "POE_CAL_COD"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "CATEG_REF_CODES": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "COD",
+     "type": "VC 10",
+     "label": "Code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DSC",
+     "type": "VC 35",
+     "label": "Description",
+     "null": "mandatory"
+    },
+    {
+     "name": "LNG",
+     "type": "N 4",
+     "label": "Length",
+     "null": "mandatory"
+    },
+    {
+     "name": "USR_CHG_IND",
+     "type": "VC 1",
+     "label": "User change indicator",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CREFC_PK",
+     "columns": [
+      "COD"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "CATEG_REF_CODES_TRANSL": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "COD",
+     "type": "VC 10",
+     "label": "Code",
+     "null": "mandatory"
+    },
+    {
+     "name": "LANG_COD",
+     "type": "VC 3",
+     "label": "Translated language code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DSC",
+     "type": "VC 35",
+     "label": "Description",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CREFCT_PK",
+     "columns": [
+      "COD",
+      "LANG_COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "CREFCT_CREFC_FK",
+     "columns": [
+      "COD"
+     ],
+     "ref": "CREFC_PK"
+    }
+   ]
+  },
+  "CORRELATION_RULES": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "COD",
+     "type": "VC 8",
+     "label": "Code",
+     "null": "mandatory"
+    },
+    {
+     "name": "TYP",
+     "type": "VC 4",
+     "label": "Type",
+     "null": "mandatory"
+    },
+    {
+     "name": "REF_EXH_CAT",
+     "type": "VC 40",
+     "label": "Reference exhibit category list",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXH_CAT_RUL",
+     "type": "VC 6",
+     "label": "Exhibit category correlation rule",
+     "null": "mandatory"
+    },
+    {
+     "name": "INC_SIT",
+     "type": "VC 40",
+     "label": "Included sites",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXC_SIT",
+     "type": "VC 40",
+     "label": "Excluded sites",
+     "null": "optional"
+    },
+    {
+     "name": "INC_LAW",
+     "type": "VC 100",
+     "label": "Included law agencies",
+     "null": "optional"
+    },
+    {
+     "name": "EXC_LAW",
+     "type": "VC 100",
+     "label": "Excluded law agencies",
+     "null": "optional"
+    },
+    {
+     "name": "OCC_STR_DAY",
+     "type": "N 4,0",
+     "label": "Occurrence start days",
+     "null": "optional"
+    },
+    {
+     "name": "OCC_END_DAY",
+     "type": "N 4,0",
+     "label": "Occurrence end days",
+     "null": "optional"
+    },
+    {
+     "name": "COMMENTS",
+     "type": "VC 100",
+     "label": "A comment",
+     "null": "optional"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CORUL_PK",
+     "columns": [
+      "COD"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "FIREARM_MODELS": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "FIR_CAL_COD",
+     "type": "VC 6",
+     "label": "Firearm caliber code",
+     "null": "mandatory"
+    },
+    {
+     "name": "FIR_MAK_COD",
+     "type": "VC 3",
+     "label": "Firearm make code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DSC",
+     "type": "VC 20",
+     "label": "Description",
+     "null": "mandatory"
+    },
+    {
+     "name": "FIR_TYP",
+     "type": "VC 2",
+     "label": "Firearm type",
+     "null": "mandatory"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "PRF_IND",
+     "type": "VC 1",
+     "label": "Preference indicator",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "FIRM_PK",
+     "columns": [
+      "FIR_MAK_COD",
+      "FIR_CAL_COD",
+      "DSC"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "LAW_AGENCIES": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "ORI_NUM",
+     "type": "VC 20",
+     "label": "Original Requester Identification number",
+     "null": "mandatory"
+    },
+    {
+     "name": "NAM",
+     "type": "VC 40",
+     "label": "ORI name",
+     "null": "mandatory"
+    },
+    {
+     "name": "SHR_NAM",
+     "type": "VC 20",
+     "label": "Short name",
+     "null": "mandatory"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "PRF_IND",
+     "type": "VC 1",
+     "label": "Preferred indicator",
+     "null": "optional"
+    },
+    {
+     "name": "LAWSS1_COD",
+     "type": "VC 100",
+     "label": "Law agency subset code #1",
+     "null": "optional"
+    },
+    {
+     "name": "LAWSS2_COD",
+     "type": "VC 100",
+     "label": "Law agency subset code #2",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "LAW_PK",
+     "columns": [
+      "ORI_NUM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "LAW_I",
+     "columns": [
+      "SHR_NAM"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "LAW_SUBSETS": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "COD",
+     "type": "VC 20",
+     "label": "Law agency subset code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ORI_NUM",
+     "type": "VC 20",
+     "label": "Law agency originating number",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "LAWSS_PK",
+     "columns": [
+      "COD",
+      "ORI_NUM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "LAWSS_LAW_FK",
+     "columns": [
+      "ORI_NUM"
+     ],
+     "ref": "LAW_PK"
+    }
+   ]
+  },
+  "REF_CODES": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "CREFC_COD",
+     "type": "VC 10",
+     "label": "Category reference code",
+     "null": "mandatory"
+    },
+    {
+     "name": "COD",
+     "type": "VC 20",
+     "label": "Code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DSC",
+     "type": "VC 2000",
+     "label": "Description",
+     "null": "mandatory"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "PRF_IND",
+     "type": "VC 1",
+     "label": "Preference indicator",
+     "null": "optional"
+    },
+    {
+     "name": "SHR_DSC",
+     "type": "VC 10",
+     "label": "Short description",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "REFC_PK",
+     "columns": [
+      "CREFC_COD",
+      "COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "REFC_CREFC_FK",
+     "columns": [
+      "CREFC_COD"
+     ],
+     "ref": "CREFC_PK"
+    }
+   ]
+  },
+  "REF_CODES_TRANSL": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "CREFC_COD",
+     "type": "VC 10",
+     "label": "Category reference code",
+     "null": "mandatory"
+    },
+    {
+     "name": "COD",
+     "type": "VC 20",
+     "label": "Code",
+     "null": "mandatory"
+    },
+    {
+     "name": "LANG_COD",
+     "type": "VC 3",
+     "label": "Translated language code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DSC",
+     "type": "VC 2000",
+     "label": "Description",
+     "null": "mandatory"
+    },
+    {
+     "name": "SHR_DSC",
+     "type": "VC 10",
+     "label": "Short description",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "REFCT_PK",
+     "columns": [
+      "CREFC_COD",
+      "COD",
+      "LANG_COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "REFCT_REFC_FK",
+     "columns": [
+      "CREFC_COD",
+      "COD"
+     ],
+     "ref": "REFC_PK"
+    }
+   ]
+  },
+  "SITES": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "COD",
+     "type": "VC5",
+     "label": "Site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DSP_COD",
+     "type": "N1",
+     "label": "Display code",
+     "null": "mandatory"
+    },
+    {
+     "name": "FUL_NAM",
+     "type": "VC 40",
+     "label": "Site name",
+     "null": "mandatory"
+    },
+    {
+     "name": "LVL_DSC",
+     "type": "VC 7",
+     "label": "Site level description",
+     "null": "mandatory"
+    },
+    {
+     "name": "SHR_NAM",
+     "type": "VC 20",
+     "label": "Short Name",
+     "null": "mandatory"
+    },
+    {
+     "name": "TYP",
+     "type": "VC 3",
+     "label": "Type",
+     "null": "mandatory"
+    },
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Parent site code",
+     "null": "optional"
+    },
+    {
+     "name": "DB_DET_COD",
+     "type": "VC 1",
+     "label": "Database detail code",
+     "null": "mandatory"
+    },
+    {
+     "name": "GEO_POS_LAT",
+     "type": "VC 15",
+     "label": "Geographical position - latitude",
+     "null": "mandatory"
+    },
+    {
+     "name": "GEO_POS_LON",
+     "type": "VC 15",
+     "label": "Geographical position - longitude",
+     "null": "mandatory"
+    },
+    {
+     "name": "KEP_RES_IND",
+     "type": "VC 1",
+     "label": "Keep Results Indicator",
+     "null": "optional"
+    },
+    {
+     "name": "CNN_STG_COD",
+     "type": "VC 20",
+     "label": "Connect string code",
+     "null": "mandatory"
+    },
+    {
+     "name": "SCHEMA_NAM",
+     "type": "VC 10",
+     "label": "IBIS base schema name",
+     "null": "optional"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CAS_RST_IND",
+     "type": "VC 1",
+     "label": "Case restricted indicator",
+     "null": "optional"
+    },
+    {
+     "name": "RES_PCT",
+     "type": "N 3",
+     "label": "Result percentage",
+     "null": "optional"
+    },
+    {
+     "name": "RES_CNT",
+     "type": "N 3",
+     "label": "Minimum result count",
+     "null": "optional"
+    },
+    {
+     "name": "TF_BUF_DAY",
+     "type": "N 3",
+     "label": "Test fire buffer in days",
+     "null": "optional"
+    },
+    {
+     "name": "INCL_REF_CAS_SAM",
+     "type": "VC 1",
+     "label": "Include reference case sample",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_CORRQ_DAY",
+     "type": "N 4",
+     "label": "Deletion of correlation request in days",
+     "null": "optional"
+    },
+    {
+     "name": "ARC_CORRQ_DAY",
+     "type": "N 4",
+     "label": "Archival of correlation request in days",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_IMP_EXH",
+     "type": "VC 1",
+     "label": "Delete imported exhibits",
+     "null": "optional"
+    },
+    {
+     "name": "MPX_JUR_MAN",
+     "type": "VC 1",
+     "label": "MATCHPOINT jurisdiction state",
+     "null": "optional"
+    },
+    {
+     "name": "IMP_TOPN_EXH",
+     "type": "N 3",
+     "label": "Import top N exhibits",
+     "null": "optional"
+    },
+    {
+     "name": "IMP_SKP_EXIST",
+     "type": "VC 1",
+     "label": "Skip import of existing exhibit",
+     "null": "optional"
+    },
+    {
+     "name": "COR_SIT_COD",
+     "type": "VC 5",
+     "label": "Correlating site code",
+     "null": "optional"
+    },
+    {
+     "name": "SITSS1_COD",
+     "type": "VC 200",
+     "label": "Correlation site subset code #1",
+     "null": "optional"
+    },
+    {
+     "name": "SITSS2_COD",
+     "type": "VC 40",
+     "label": "Correlation site subset code #2",
+     "null": "optional"
+    },
+    {
+     "name": "SHO_LAWSS_COD",
+     "type": "VC 100",
+     "label": "Available agencies",
+     "null": "optional"
+    },
+    {
+     "name": "NET_COD",
+     "type": "VC 5",
+     "label": "Network code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORUL_COD",
+     "type": "VC 60",
+     "label": "Correlation rule code list",
+     "null": "optional"
+    },
+    {
+     "name": "COU_COD",
+     "type": "VC 2",
+     "label": "Country code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DEL_NOT_IN_TOPN_DAY",
+     "type": "N 3",
+     "label": "Delete exhibits not in top N in days",
+     "null": "optional"
+    },
+    {
+     "name": "TOPN_DAY",
+     "type": "N 3",
+     "label": "Delete exhibits in top N in days",
+     "null": "optional"
+    },
+    {
+     "name": "UNDEL_EXP_DAY",
+     "type": "N 2",
+     "label": "Undelete expiration period in days",
+     "null": "optional"
+    },
+    {
+     "name": "COR_RM_CRI_DAY",
+     "type": "Integer",
+     "label": "Remove crime exhibits involved in hits from correlation",
+     "null": "optional"
+    },
+    {
+     "name": "ENV_COD",
+     "type": "Text",
+     "label": "Environment code",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "SIT_PK",
+     "columns": [
+      "COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "SIT_I",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "u",
+     "name": "SIT_I2",
+     "columns": [
+      "SHR_NAM"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "SIT_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    },
+    {
+     "kind": "f",
+     "name": "SIT_COR_SIT_FK",
+     "columns": [
+      "COR_SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "SITE_SUBSETS": {
+   "group": "Common Data Tables",
+   "columns": [
+    {
+     "name": "COD",
+     "type": "VC 16",
+     "label": "Site subset code",
+     "null": "mandatory"
+    },
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "SITSS_PK",
+     "columns": [
+      "COD",
+      "SIT_COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "SITSS_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "REP_ACQUI_CTL": {
+   "group": "Replication Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Acquisition site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "INC_COD",
+     "type": "VC 1",
+     "label": "Acquisition site code",
+     "null": "optional"
+    },
+    {
+     "name": "SRC_SIT_COD",
+     "type": "VC 5",
+     "label": "Source site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "DES_SIT_COD",
+     "type": "VC 5",
+     "label": "Destination site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TSTZ 0",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "REPAC_UI",
+     "columns": [
+      "SIT_COD",
+      "SRC_SIT_COD",
+      "DES_SIT_COD",
+      "COALESCE(INC_COD,'NULL')"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "REP_ACQUI_HASH": {
+   "group": "Replication Tables",
+   "columns": [
+    {
+     "name": "TBL_ALI",
+     "type": "VC 6",
+     "label": "Table alias",
+     "null": "mandatory"
+    },
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Acquisition site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "STR_ID",
+     "type": "INT",
+     "label": "Starting identifier range",
+     "null": "mandatory"
+    },
+    {
+     "name": "RNG",
+     "type": "INT",
+     "label": "Range",
+     "null": "mandatory"
+    },
+    {
+     "name": "COD",
+     "type": "VC 16",
+     "label": "Hash code",
+     "null": "mandatory"
+    },
+    {
+     "name": "HASH",
+     "type": "Bytea 16",
+     "label": "Hash value",
+     "null": "optional"
+    },
+    {
+     "name": "CNT",
+     "type": "INT",
+     "label": "Count",
+     "null": "mandatory"
+    },
+    {
+     "name": "MAX_ID",
+     "type": "INT",
+     "label": "Record highest id",
+     "null": "mandatory"
+    },
+    {
+     "name": "MIN_ID",
+     "type": "INT",
+     "label": "Record lowest id",
+     "null": "mandatory"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "REPAH_PK",
+     "columns": [
+      "TBL_ALI",
+      "SIT_COD",
+      "RNG",
+      "STR_ID",
+      "COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "REPAH_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "REP_COMMON_HASH": {
+   "group": "Replication Tables",
+   "columns": [
+    {
+     "name": "TBL_ALI",
+     "type": "VC 20",
+     "label": "Table alias",
+     "null": "mandatory"
+    },
+    {
+     "name": "COD",
+     "type": "VC 10",
+     "label": "Identifier range",
+     "null": "mandatory"
+    },
+    {
+     "name": "HASH",
+     "type": "Bytea 16",
+     "label": "Hash value",
+     "null": "optional"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "REPCH_PK",
+     "columns": [
+      "TBL_ALI",
+      "COD"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "REP_LOB_HASH": {
+   "group": "Replication Tables",
+   "columns": [
+    {
+     "name": "TBL_ALI",
+     "type": "VC 6",
+     "label": "Table alias",
+     "null": "mandatory"
+    },
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Acquisition site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Starting identifier range",
+     "null": "mandatory"
+    },
+    {
+     "name": "HASH",
+     "type": "Bytea 16",
+     "label": "Hash value",
+     "null": "optional"
+    },
+    {
+     "name": "REC_MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Modification time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "REPLH_PK",
+     "columns": [
+      "TBL_ALI",
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "REPLH_SIT_FK",
+     "columns": [
+      "SIT_COD"
+     ],
+     "ref": "SIT_PK"
+    }
+   ]
+  },
+  "CORRELATION_HISTORY": {
+   "group": "Statistics, Monitoring, and Logging Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "ID",
+     "type": "N 14",
+     "label": "Correlation request identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "REF_SIT_COD",
+     "type": "VC 5",
+     "label": "Reference exhibit site code",
+     "null": "optional"
+    },
+    {
+     "name": "REF_POE_ID",
+     "type": "N 14",
+     "label": "Reference exhibit identifier",
+     "null": "optional"
+    },
+    {
+     "name": "EVI_CLA_COD",
+     "type": "VC 3",
+     "label": "Evidence class code",
+     "null": "mandatory"
+    },
+    {
+     "name": "TYP",
+     "type": "VC 1",
+     "label": "Type",
+     "null": "mandatory"
+    },
+    {
+     "name": "SUB_TYP",
+     "type": "VC 5",
+     "label": "Sub type",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_TIM",
+     "type": "TZ",
+     "label": "Creation time",
+     "null": "mandatory"
+    },
+    {
+     "name": "CRE_PER_UI",
+     "type": "VC 20",
+     "label": "Creation person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "SUBMITTED",
+     "type": "TSTZ 0",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "QUEUED",
+     "type": "TSTZ 0",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "PROCESSING",
+     "type": "TSTZ 0",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "SAMPLE_SIZE",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "COMPLETED",
+     "type": "TSTZ 0",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "FAILED",
+     "type": "TSTZ 0",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "RETURNED",
+     "type": "TSTZ 0",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "REV_TIM",
+     "type": "TSTZ 0",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "REV_PER_UI",
+     "type": "VC 20",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_TIM",
+     "type": "TSTZ 0",
+     "label": "Deletion time by an IBIS user",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_PER_UI",
+     "type": "VC 20",
+     "label": "Deletion person unique identifier",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_USER_TIM",
+     "type": "TSTZ 0",
+     "label": "Deletion time from any source",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_USER",
+     "type": "Text",
+     "label": "Deletion database user",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_APP",
+     "type": "Text",
+     "label": "Deletion database user",
+     "null": "optional"
+    },
+    {
+     "name": "DEL_CLI_IP",
+     "type": "Text",
+     "label": "Deletion database user",
+     "null": "optional"
+    },
+    {
+     "name": "STA_COD",
+     "type": "VC 1",
+     "label": "Status code",
+     "null": "mandatory"
+    },
+    {
+     "name": "MOD_TIM",
+     "type": "TSTZ 0",
+     "label": "Deletion time from any source",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CORHIST_PK",
+     "columns": [
+      "SIT_COD",
+      "ID"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "CORRELATION_STAT_DETAILS": {
+   "group": "Statistics, Monitoring, and Logging Tables",
+   "columns": [
+    {
+     "name": "PERIOD",
+     "type": "TSTZ 0",
+     "label": "Time period",
+     "null": "mandatory"
+    },
+    {
+     "name": "SNAP_TIM",
+     "type": "TSTZ 0",
+     "label": "Snapshot timestamp",
+     "null": "optional"
+    },
+    {
+     "name": "CURRENTLY_NEW",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "WAITING_FOR_RESULTS",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "IN_QUEUE",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "TO_BE_RETURNED",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "REVIEW_BACKLOG",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "ADDED_TO_QUEUE",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "AVG_QUEUE_TIM",
+     "type": "INTVL",
+     "label": "Average queue time",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_PROCESSED",
+     "type": "N",
+     "label": "Bullets processed",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_LAST_MORE_THAN_1HR",
+     "type": "N",
+     "label": "Bullet lasted more than 1 hour",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_SAMPLES_CORRELATED",
+     "type": "N",
+     "label": "Bullet samples correlated",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_NB_COR_AUTO",
+     "type": "N",
+     "label": "Bullet number correlation automatic",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_AVG_SAMPLE_SIZE_AUTO",
+     "type": "I",
+     "label": "Bullet average sample size automatic",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_AVG_COR_TIM_AUTO",
+     "type": "INTVL",
+     "label": "Bullet average correlation time automatic",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_NB_COR_MANUAL",
+     "type": "N",
+     "label": "Bullet number correlation manual",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_AVG_SAMPLE_SIZE_MANUAL",
+     "type": "I",
+     "label": "Bullet average sample size manual",
+     "null": "optional"
+    },
+    {
+     "name": "BUL_AVG_COR_TIM_MANUAL",
+     "type": "INTVL",
+     "label": "Bullet average correlation time manual",
+     "null": "optional"
+    },
+    {
+     "name": "CC_PROCESSED",
+     "type": "N",
+     "label": "Cartridge cases processed",
+     "null": "optional"
+    },
+    {
+     "name": "CC_LAST_MORE_THAN_1HR",
+     "type": "N",
+     "label": "Cartridge case lasted more than 1 hour",
+     "null": "optional"
+    },
+    {
+     "name": "CC_SAMPLES_CORRELATED",
+     "type": "N",
+     "label": "Cartridge case samples correlated",
+     "null": "optional"
+    },
+    {
+     "name": "CC_NB_COR_AUTO",
+     "type": "N",
+     "label": "Cartridge case number correlation automatic",
+     "null": "optional"
+    },
+    {
+     "name": "CC_AVG_SAMPLE_SIZE_AUTO",
+     "type": "I",
+     "label": "Cartridge case average sample size automatic",
+     "null": "optional"
+    },
+    {
+     "name": "CC_AVG_COR_TIM_AUTO",
+     "type": "INTVL",
+     "label": "Cartridge case average correlation time automatic",
+     "null": "optional"
+    },
+    {
+     "name": "CC_NB_COR_MANUAL",
+     "type": "N",
+     "label": "Cartridge case number correlation manual",
+     "null": "optional"
+    },
+    {
+     "name": "CC_AVG_SAMPLE_SIZE_MANUAL",
+     "type": "I",
+     "label": "Cartridge case average sample size manual",
+     "null": "optional"
+    },
+    {
+     "name": "CC_AVG_COR_TIM_MANUAL",
+     "type": "INTVL",
+     "label": "Cartridge case average correlation time manual",
+     "null": "optional"
+    },
+    {
+     "name": "RETURNED",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "FAILED",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "REVIEWED",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "CORSTAT_PK",
+     "columns": [
+      "PERIOD"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "HIT_STATS": {
+   "group": "Statistics, Monitoring, and Logging Tables",
+   "columns": [
+    {
+     "name": "SIT_COD",
+     "type": "VC 5",
+     "label": "Site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "HIT_ID",
+     "type": "N 14",
+     "label": "Hit identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_SIT_COD",
+     "type": "VC 5",
+     "label": "Correlation request site code",
+     "null": "mandatory"
+    },
+    {
+     "name": "CORRQ_ID",
+     "type": "N 14",
+     "label": "Correlation request identifier",
+     "null": "mandatory"
+    },
+    {
+     "name": "SCO_COD",
+     "type": "VC 16",
+     "label": "Score code",
+     "null": "mandatory"
+    },
+    {
+     "name": "RNK",
+     "type": "INT",
+     "label": "Rank",
+     "null": "mandatory"
+    },
+    {
+     "name": "VAL",
+     "type": "N",
+     "label": "Score value",
+     "null": "mandatory"
+    },
+    {
+     "name": "TES_CNT",
+     "type": "N 7",
+     "label": "Test count",
+     "null": "optional"
+    },
+    {
+     "name": "REF_IS_REF",
+     "type": "N 1",
+     "label": "Rank",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "HITSTAT_PK",
+     "columns": [
+      "SIT_COD",
+      "HIT_ID",
+      "CORRQ_SIT_COD",
+      "CORRQ_ID",
+      "SCO_COD"
+     ],
+     "ref": ""
+    },
+    {
+     "kind": "f",
+     "name": "HITSTAT_FK",
+     "columns": [
+      "SIT_COD",
+      "HIT_ID"
+     ],
+     "ref": "HITS_PK"
+    }
+   ]
+  },
+  "IBIS_DISABLED_CONSTRAINTS": {
+   "group": "Statistics, Monitoring, and Logging Tables",
+   "columns": [
+    {
+     "name": "NSPNAME",
+     "type": "VC",
+     "label": "Schema name",
+     "null": "mandatory"
+    },
+    {
+     "name": "RELNAME",
+     "type": "VC",
+     "label": "Table name",
+     "null": "mandatory"
+    },
+    {
+     "name": "CONNAME",
+     "type": "VC",
+     "label": "Constraint name",
+     "null": "mandatory"
+    },
+    {
+     "name": "CONTYPE",
+     "type": "CHAR",
+     "label": "Constraint type",
+     "null": "mandatory"
+    },
+    {
+     "name": "CONDEF",
+     "type": "VC",
+     "label": "Constraint definition",
+     "null": "mandatory"
+    },
+    {
+     "name": "DROP_BY",
+     "type": "VC",
+     "label": "Dropped by user name",
+     "null": "mandatory"
+    },
+    {
+     "name": "DROP_TIM",
+     "type": "TSTZ 0",
+     "label": "Dropped by time",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "DISCON_PK",
+     "columns": [
+      "NSPNAME",
+      "RELNAME",
+      "CONNAME"
+     ],
+     "ref": ""
+    }
+   ]
+  },
+  "PROCESS_LOG": {
+   "group": "Statistics, Monitoring, and Logging Tables",
+   "columns": [
+    {
+     "name": "PROCESS_NAME",
+     "type": "VC 30",
+     "label": "",
+     "null": "mandatory"
+    },
+    {
+     "name": "EXECUTION_DATE",
+     "type": "TSTZ 0",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "PARAM_1",
+     "type": "VC 30",
+     "label": "Parameter no. 1",
+     "null": "optional"
+    },
+    {
+     "name": "PARAM_2",
+     "type": "VC 30",
+     "label": "Parameter no. 2",
+     "null": "optional"
+    },
+    {
+     "name": "PARAM_3",
+     "type": "VC 30",
+     "label": "Parameter no. 3",
+     "null": "optional"
+    },
+    {
+     "name": "STATUS",
+     "type": "VC 1",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "RESULT_NAME",
+     "type": "VC 30",
+     "label": "",
+     "null": "optional"
+    },
+    {
+     "name": "RESULT_VALUE",
+     "type": "N",
+     "label": "",
+     "null": "optional"
+    }
+   ],
+   "keys": []
+  },
+  "SCAN_PARTITIONS": {
+   "group": "Statistics, Monitoring, and Logging Tables",
+   "columns": [
+    {
+     "name": "PARTNAME",
+     "type": "TEXT",
+     "label": "Partition name",
+     "null": "mandatory"
+    },
+    {
+     "name": "PARTNAME_SUFFIX",
+     "type": "TEXT",
+     "label": "Suffix of the partition",
+     "null": "mandatory"
+    },
+    {
+     "name": "STATUS",
+     "type": "VC1",
+     "label": "Status",
+     "null": "mandatory"
+    },
+    {
+     "name": "NEXT_RUN_DATE",
+     "type": "Date",
+     "label": "Next run date",
+     "null": "mandatory"
+    },
+    {
+     "name": "SCAN_INTERVAL",
+     "type": "INT",
+     "label": "Next run date",
+     "null": "mandatory"
+    },
+    {
+     "name": "LAST_RUN_TIME",
+     "type": "TZ",
+     "label": "Last run time",
+     "null": "optional"
+    },
+    {
+     "name": "DURATION_TIME",
+     "type": "INTVL",
+     "label": "Duration time",
+     "null": "optional"
+    },
+    {
+     "name": "PARTSIZE",
+     "type": "N",
+     "label": "Partition size",
+     "null": "mandatory"
+    }
+   ],
+   "keys": [
+    {
+     "kind": "p",
+     "name": "SP_PK",
+     "columns": [
+      "PARTNAME"
+     ],
+     "ref": ""
+    }
+   ]
+  }
+ },
+ "views": [
+  "ACQ_PER_YEAR",
+  "AUTOVACUUM_THRESHOLDS",
+  "AUTO_CORRELATION_RULES_MV",
+  "AVAILABLE_LAW_AGENCIES",
+  "BLOCKER",
+  "BUL_DELIMITERS_VIEW",
+  "BUL_SIGNATURES_VERSION",
+  "CASES_LINKED_SUMMARY",
+  "CASES_REPLICATION_VIEW",
+  "CC_DELIMITERS_VIEW",
+  "CC_SIGNATURES_VERSION",
+  "CHILD_SITES_VIEW",
+  "CORRELATION_CFG",
+  "CORRELATION_RULES_VIEW",
+  "CORRELATION_STATS",
+  "CORRQ_PAGING_VIEW",
+  "CORRS_REPLICATION_VIEW",
+  "CURRENT_COR",
+  "DEFAULT_MANUAL_CORRELATION",
+  "DELIMITERS_VIEW",
+  "DISK_SPACE_PER_ROI",
+  "DISK_SPACE_SUMMARY",
+  "DISK_USAGE",
+  "DISK_USAGE_APPROX",
+  "DISK_USAGE_HIST_HR",
+  "DISK_USAGE_IDX",
+  "DISK_USAGE_LATEST",
+  "EMPTY_REMOTE_CASES",
+  "EXH_CAT_RATIO",
+  "EXH_LINK_SUMMARY",
+  "EXPORT_CONF_IMAGES_VIEW",
+  "FAILED_COR",
+  "HIT",
+  "HIT_GROUPS_BY_CASES",
+  "HIT_GROUPS_BY_EXH",
+  "HITS_NOTIF_VIEW",
+  "HITS_REFACT_BY_EXH",
+  "HITS_REFINFO_VIEW",
+  "HITS_REPLICATION_VIEW",
+  "IBIS_VERSION",
+  "IMA",
+  "IMC",
+  "IMPORTED_RATIO",
+  "INCOMING_REPLICATED_SITES",
+  "INDEX_PROGRESS",
+  "MISSING_IMAGES",
+  "MISSING_OBSOLETE_SIGNATURES",
+  "MOST_COMMON_CALIBERS",
+  "MPP_RES_VIEW",
+  "NEXT_AUTOANALYZE",
+  "NEXT_AUTOVACUUM",
+  "OLD_REMOTE_EXHIBITS",
+  "OUTGOING_REPLICATED_SITES",
+  "PARTITION_BY_SITE",
+  "PIVOT_ALL_SCORES",
+  "PIVOT_NORM_SCORES",
+  "POE",
+  "RAISED_PLSQL_ERRORS",
+  "RANKED_SCORES_BYPH_VIEW",
+  "RANKED_SCORES_VIEW",
+  "REPAC_DETAILS",
+  "REP_ACQUI_CTL_EXPANDED",
+  "REPLICATED_SITES_NOT_HOSTED",
+  "REPLICATION_TREE",
+  "REQUESTS2NORMALIZE",
+  "SAMPLES_BUL",
+  "SAMPLES_CC",
+  "SAMPLES_CORE_VIEW",
+  "SAMPLES_VIEW",
+  "SIG",
+  "SIGNATURES_VERSION",
+  "SITES_ORIGIN",
+  "SITES_TREE",
+  "SITES_VIEW",
+  "SIZING_INFORMATION",
+  "USERS_VIEW",
+  "VACUUM_PROGRESS",
+  "VALIDATE_REPAH"
+ ]
+}
