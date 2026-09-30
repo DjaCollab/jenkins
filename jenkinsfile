@@ -55,13 +55,14 @@ def extractPgVersion(String text) {
 // state via env (a plain Groovy local/closure from one script{} block isn't visible to a
 // separate top-level method).
 
-// Set to true to post cards to the production Teams channel. While false, each card is only
+// Set to true to post cards to the production "SEC Builds Notifier" Teams channel. While false, each card is only
 // echoed to the console, so the pipeline can be verified without notifying the channel.
 @groovy.transform.Field
-boolean TEAMS_POST_ENABLED = false
+boolean TEAMS_POST_ENABLED = true
 
-// Every card in this pipeline goes to the production Teams channel, via the Teams-PGUP
-// webhook credential (Jenkinsfile-test uses Teams-PGUP-TEST instead).
+// Every card in this pipeline goes to the production "SEC Builds Notifier" Teams channel,
+// via the Teams-PGUP webhook credential (Jenkinsfile-test uses Teams-PGUP-TEST, which
+// posts to "PG upgrade Test").
 // A failed post is logged but never fails the build.
 def postTeamsCard(String cardFile, String label) {
     if (!TEAMS_POST_ENABLED) {
@@ -598,7 +599,9 @@ def processVm(vm, group, pgUpgradeAvailable, detail) {
                                                     env.CHECKCON_OUTPUT = ''
                                                     env.CHECKCON_PASSED = 'false'
                                                 }
-                                                detail << [label: 'Consistency (checkcon)', passed: (env.CHECKCON_PASSED == 'true'), value: env.CHECKCON_PASSED == 'true' ? 'compliant' : 'issues found']
+                                                // output is what the checkcon Teams alert shows when this fails.
+                                                detail << [label: 'Consistency (checkcon)', passed: (env.CHECKCON_PASSED == 'true'), value: env.CHECKCON_PASSED == 'true' ? 'compliant' : 'issues found',
+                                                           output: (checkconRc == 0) ? env.CHECKCON_OUTPUT : "could not run checkcon() (psql exit ${checkconRc})"]
 
                                                 // Reported for visibility only - no longer gates the install. An installer
                                                 // that cannot take an exclusive lock can still half-apply, which leaves the
@@ -1112,16 +1115,45 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                             // A VM stuck on an older PostgreSQL engine than PG_VERSION_EXPECTED is
                             // permanently blocked from getting the DB package until PG is upgraded -
                             // that's actionable and easy to miss inside a routine "no VM upgraded"
-                            // build, so it's surfaced unconditionally, independent of (and not
-                            // suppressed by) the repeat-failure dedup below.
+                            // build, so it gets its own card, independent of the final card below.
+                            // Once per issue: the card goes out when a VM newly mismatches, or its
+                            // reported version or the target changes; an unchanged mismatch isn't
+                            // re-sent every run. When it does go out it lists every current mismatch.
                             def pgMismatches = results.findAll { r ->
                                 r.detail.any { d -> d.label?.startsWith('PostgreSQL ') && d.passed == false }
                             }.collect { r ->
                                 def pgDetail = r.detail.find { d -> d.label?.startsWith('PostgreSQL ') }
                                 [name: r.name, actual: pgDetail?.value ?: 'unknown']
                             }
-                            if (pgMismatches) {
+                            def pgStateFile = 'teams_notified_pg_mismatch.txt'
+                            def pgNotified = [:]
+                            if (fileExists(pgStateFile)) {
+                                readFile(pgStateFile).trim().readLines().each { line ->
+                                    def parts = line.split('=', 2)
+                                    if (parts.length == 2) {
+                                        pgNotified[parts[0]] = parts[1]
+                                    }
+                                }
+                            }
+                            // Resolved - a future mismatch on this VM should notify fresh again.
+                            results.findAll { r -> r.detail.any { d -> d.label?.startsWith('PostgreSQL ') && d.passed == true } }
+                                   .each { r -> pgNotified.remove(r.name) }
+                            def newPgMismatch = false
+                            pgMismatches.each { m ->
+                                def signature = "${env.PG_VERSION_EXPECTED}|${m.actual}"
+                                if (pgNotified[m.name] == signature) {
+                                    echo "Suppressing repeat PostgreSQL-mismatch warning for ${m.name} - already notified (${m.actual})"
+                                } else {
+                                    newPgMismatch = true
+                                    pgNotified[m.name] = signature
+                                }
+                            }
+                            if (newPgMismatch) {
                                 sendPgEngineMismatchWarning(pgMismatches)
+                            }
+                            // While posting is disabled nobody was actually told, so don't record these.
+                            if (TEAMS_POST_ENABLED) {
+                                writeFile file: pgStateFile, text: pgNotified.collect { k, v -> "${k}=${v}" }.join('\n')
                             }
 
                             // Don't re-alert on a failure that's already been reported and hasn't changed -
@@ -1166,7 +1198,8 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                             // sent the 30-minute warning always gets its closing card, success or failure,
                             // so the channel is never left with a warning and no outcome.
                             def upgradePlanned = (env.VMS_TO_UPGRADE ?: '') != ''
-                            if (upgradePlanned || successCount > 0 || newFailureVms.size() > 0) {
+                            def checkcon = collectCheckconNotes(results)
+                            if (upgradePlanned || successCount > 0 || newFailureVms.size() > 0 || checkcon.fresh) {
                                 def overallResult = currentBuild.currentResult ?: 'SUCCESS'
                                 def resultColor = (overallResult == 'SUCCESS') ? 'good' : (overallResult == 'FAILURE') ? 'attention' : 'warning'
                                 def resultIcon = (overallResult == 'SUCCESS') ? '✅' : (overallResult == 'FAILURE') ? '❌' : '⚠️'
@@ -1175,7 +1208,7 @@ def generateReportAndNotify(results, pgUpgradeAvailable) {
                                     def pgDetail = r.detail.find { it.label == 'PostgreSQL engine' }
                                     def pgValue = pgDetail?.value?.toString()
                                     def pgText = (pgValue && !pgValue.startsWith('N/A')) ? " (PG: ${pgValue})" : ''
-                                    """{"title": "${jsonEscape(r.name)} (${jsonEscape(r.phase)})", "value": "${jsonEscape(r.status)} - build ${jsonEscape(r.version ?: 'N/A')}${jsonEscape(pgText)}"}"""
+                                    """{"title": "${jsonEscape(r.name)} (${jsonEscape(r.phase)})", "value": "${jsonEscape(r.status)} - build ${jsonEscape(r.version ?: 'N/A')}${jsonEscape(pgText)}${checkcon.notes[r.name] ? jsonEscape(' • ' + checkcon.notes[r.name]) : ''}"}"""
                                 }.join(',\n')
 
                                 def pgTargetFact = pgUpgradeAvailable ? ",\n{\"title\": \"PG target version\", \"value\": \"${jsonEscape(env.PG_TARGET_VERSION)}\"}" : ''
@@ -1347,7 +1380,7 @@ def sendRegressionResultNotification(regressionResults) {
     def summaryText = failedResults.isEmpty() ? 'Regression tests passed' : 'Regression tests FAILED'
 
     def vmFacts = regressionResults.collect { r ->
-        def value = r.passed ? 'passed' : "FAILED - ${r.failedChecks.join(', ')}"
+        def value = r.passed ? 'passed' : "FAILED - ${checkconFailingLines(r.output)}"
         """{"title": "${jsonEscape(r.host)}", "value": "${jsonEscape(value)}"}"""
     }.join(',\n')
 
@@ -1395,6 +1428,68 @@ def sendRegressionResultNotification(regressionResults) {
 
     writeFile file: 'teams_card_regression_result.json', text: card, encoding: 'UTF-8'
     postTeamsCard('teams_card_regression_result.json', 'regression-result notification')
+}
+
+// The lines of a checkcon() output that report a problem, joined for a one-line card
+// value - a line counts as fine when it contains one of the "check passed" markers.
+// Falls back to the whole output when no single line stands out (e.g. a line is missing).
+@NonCPS
+def checkconFailingLines(String output) {
+    def passMarkers = [
+        '0 disabled trigger found',
+        '0 disabled constraint(s) found',
+        'materialized view(s) refreshed',
+        'Images and signatures partition definitions are compliant.',
+        'Table scan_partitions is compliant.'
+    ]
+    def lines = (output ?: '').readLines().collect { it.trim() }.findAll { it }
+    def failing = lines.findAll { line -> !passMarkers.any { line.contains(it) } }
+    return (failing ?: lines).join(' / ') ?: '(no output)'
+}
+
+// checkcon() failures found by processVm (before any install), for the final result card:
+// each is shown next to its VM - red (❌) when the VM needed an upgrade and the failure
+// blocked it, warning (⚠️) when the VM was already up to date and not upgraded.
+// Returns [notes: [vmName: text], fresh: true if any is new]. With the job running every
+// 4 hours, a failure whose output hasn't changed since it was last reported doesn't make
+// the card go out again on its own; it counts as new once the output changes, or after
+// the VM has passed once.
+def collectCheckconNotes(results) {
+    def stateFile = 'teams_notified_checkcon.txt'
+    def notified = [:]
+    if (fileExists(stateFile)) {
+        readFile(stateFile).trim().readLines().each { line ->
+            def parts = line.split('=', 2)
+            if (parts.length == 2) {
+                notified[parts[0]] = parts[1]
+            }
+        }
+    }
+
+    def notes = [:]
+    def fresh = false
+    for (r in results) {
+        def cc = r.detail.find { it.label == 'Consistency (checkcon)' }
+        if (cc?.passed == true) {
+            notified.remove(r.name)
+        } else if (cc?.passed == false) {
+            def critical = r.status != 'Skipped'
+            def text = checkconFailingLines(cc.output)
+            notes[r.name] = "${critical ? '❌ checkcon failed, install blocked' : '⚠️ checkcon failed'}: ${text}"
+            def signature = "${critical ? 'red' : 'warning'}|${text}"
+            if (notified[r.name] == signature) {
+                echo "checkcon() on ${r.name}: same failure already reported - not a reason on its own to send the card"
+            } else {
+                fresh = true
+                notified[r.name] = signature
+            }
+        }
+    }
+    // While posting is disabled nobody was actually told, so don't record these as notified.
+    if (TEAMS_POST_ENABLED) {
+        writeFile file: stateFile, text: notified.collect { k, v -> "${k}=${v}" }.join('\n')
+    }
+    return [notes: notes, fresh: fresh]
 }
 
 // Automation handshake (HANDSHAKE_FILE) - shared with the Trax install script and the
@@ -1523,7 +1618,7 @@ pipeline {
         string(
             name: 'TARGET_VMS',
             defaultValue: 'SVR3-009-SEC,DCXA-004-SEC,DCX2-004-SEC,DCX3-004-SEC,SVR5-004-SEC,SVR4-004-SEC,DCX1-004-SEC,DCXC-004-SEC',
-            description: 'Comma-separated VM names to process. This is currently a manual-only pipeline (no schedule) - keep this default narrow. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
+            description: 'Comma-separated VM names to process. Scheduled runs (every 4 hours) use this default. Valid names: SVR4-004-SEC, SVR3-009-SEC, SVR5-004-SEC, SVR6-004-SEC, DCXA-004-SEC, DCXB-004-SEC, DCXC-004-SEC, DCX2-003-SEC, DCX2-004-SEC, DCX3-004-SEC, DCX4-004-SEC, DCX1-004-SEC, DCX2-003-TST'
         )
         string(
             name: 'INSTALLER_FILE',
@@ -1543,14 +1638,18 @@ pipeline {
     }
 
     options {
-        // A second manual run must never stack on top of one still in progress.
+        // A run (scheduled or manual) must never stack on top of one still in progress -
+        // a run that is still going when the next 4-hour slot comes up just delays it.
         disableConcurrentBuilds()
         timeout(time: 4, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '50'))
     }
 
-    // Manual-only for now, deliberately no cron trigger - run by hand (e.g. "Build Now")
-    // until the PG install-hang issue on older-engine VMs is sorted out.
+    // Every 4 hours, with the parameter defaults (live upgrade of TARGET_VMS). H picks a
+    // fixed minute for this job so it doesn't fire at exactly :00 with every other job.
+    triggers {
+        cron('H */4 * * *')
+    }
 
     environment {
         DB_PORT             = '1815'
@@ -1872,7 +1971,7 @@ pipeline {
                         if (rc != 0) {
                             currentBuild.result = 'FAILURE'
                             echo "Regression FAILED on ${host}: could not run checkcon() (psql exit ${rc})"
-                            regressionResults << [host: host, passed: false, failedChecks: ["could not run checkcon() (psql exit ${rc})"]]
+                            regressionResults << [host: host, passed: false, failedChecks: ["could not run checkcon() (psql exit ${rc})"], output: "could not run checkcon() (psql exit ${rc})"]
                             continue
                         }
 
@@ -1882,7 +1981,7 @@ pipeline {
                         if (failedChecks) {
                             currentBuild.result = 'FAILURE'
                             echo "Regression FAILED on ${host}: ${failedChecks.join(', ')}"
-                            regressionResults << [host: host, passed: false, failedChecks: failedChecks]
+                            regressionResults << [host: host, passed: false, failedChecks: failedChecks, output: output]
                         } else {
                             echo "Regression passed on ${host}"
                             regressionResults << [host: host, passed: true, failedChecks: []]
